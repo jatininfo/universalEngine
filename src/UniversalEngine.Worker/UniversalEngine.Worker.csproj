@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-UniversalEngine.Worker-9de47f87-7239-49b5-b029-e08ba4262fc9</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\UniversalEngine.Application\UniversalEngine.Application.csproj" />
+    <ProjectReference Include="..\UniversalEngine.Infrastructure\UniversalEngine.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

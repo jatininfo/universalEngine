@@ -1,0 +1,132 @@
+using Microsoft.Extensions.Options;
+using UniversalEngine.Application.Abstractions;
+using UniversalEngine.Application.Configuration;
+using UniversalEngine.Domain.Market;
+using UniversalEngine.Domain.Scanning;
+
+namespace UniversalEngine.Application.Scanning;
+
+public sealed class EodCandidateGenerationService(
+    IMarketDataProvider marketDataProvider,
+    IOptions<EodScannerOptions> options)
+{
+    private readonly EodScannerOptions _options = options.Value;
+
+    public async Task<EodCandidateGenerationResult> GenerateAsync(
+        EodCandidateGenerationRequest request,
+        CancellationToken cancellationToken)
+    {
+        var from = request.SessionDate.AddDays(-_options.LookbackDays * 2);
+        var bars = await marketDataProvider.GetDailyBarsAsync(
+            request.Instruments,
+            from,
+            request.SessionDate,
+            cancellationToken);
+
+        var barsByInstrument = bars
+            .GroupBy(bar => bar.Instrument.Key)
+            .ToDictionary(group => group.Key, group => group.OrderBy(bar => bar.Date).ToArray());
+
+        var decisions = request.Instruments
+            .Select(instrument => EvaluateInstrument(instrument, request.SessionDate, barsByInstrument))
+            .ToArray();
+
+        return new EodCandidateGenerationResult(request.SessionDate, decisions);
+    }
+
+    private CandidateDecision EvaluateInstrument(
+        Instrument instrument,
+        DateOnly sessionDate,
+        IReadOnlyDictionary<string, DailyBar[]> barsByInstrument)
+    {
+        if (!barsByInstrument.TryGetValue(instrument.Key, out var bars) || bars.Length == 0)
+        {
+            return Reject(instrument, DecisionReasonCode.MissingDailyData, "No daily bars were available for the instrument.");
+        }
+
+        var latestBar = bars.LastOrDefault(bar => bar.Date <= sessionDate);
+        if (latestBar is null)
+        {
+            return Reject(instrument, DecisionReasonCode.MissingDailyData, "No daily bar was available on or before the requested session date.");
+        }
+
+        if (latestBar.Date != sessionDate)
+        {
+            return Reject(instrument, DecisionReasonCode.MissingDailyData, "Latest daily bar does not match the requested session date.");
+        }
+
+        var sessionEnd = new DateTimeOffset(sessionDate.ToDateTime(TimeOnly.MaxValue), latestBar.DataTimestamp.Offset);
+        if (sessionEnd - latestBar.DataTimestamp > TimeSpan.FromHours(_options.MaxDailyDataAgeHours))
+        {
+            return Reject(instrument, DecisionReasonCode.StaleDailyData, "Latest daily data is older than the configured freshness window.");
+        }
+
+        var history = bars
+            .Where(bar => bar.Date < latestBar.Date)
+            .OrderByDescending(bar => bar.Date)
+            .Take(_options.LookbackDays)
+            .ToArray();
+
+        if (history.Length < _options.LookbackDays)
+        {
+            return Reject(instrument, DecisionReasonCode.InsufficientHistory, "Not enough prior daily bars were available for the configured lookback.");
+        }
+
+        var averageTradedValue = history.Average(bar => bar.Close * bar.Volume);
+        if (averageTradedValue < _options.MinimumAverageTradedValue)
+        {
+            return Reject(instrument, DecisionReasonCode.InsufficientLiquidity, "Average traded value is below the configured liquidity threshold.");
+        }
+
+        var averageVolume = history.Average(bar => (decimal)bar.Volume);
+        var volumeExpansionRatio = averageVolume <= 0 ? 0 : latestBar.Volume / averageVolume;
+        if (volumeExpansionRatio < _options.MinimumVolumeExpansionRatio)
+        {
+            return Reject(instrument, DecisionReasonCode.InsufficientVolumeExpansion, "Latest volume did not expand enough versus the lookback average.");
+        }
+
+        var closeLocation = CalculateCloseLocation(latestBar);
+        var reasons = new List<DecisionReason>
+        {
+            new(DecisionReasonCode.AverageTradedValuePassed, "Average traded value passed the configured liquidity threshold."),
+            new(DecisionReasonCode.VolumeExpansion, "Latest volume expanded versus the lookback average.")
+        };
+
+        CandidateDirection? direction = null;
+        if (closeLocation >= _options.NearHighCloseThreshold)
+        {
+            direction = CandidateDirection.Long;
+            reasons.Add(new DecisionReason(DecisionReasonCode.CloseNearDayHigh, "Close was near the daily high."));
+        }
+        else if (closeLocation <= _options.NearLowCloseThreshold)
+        {
+            direction = CandidateDirection.Short;
+            reasons.Add(new DecisionReason(DecisionReasonCode.CloseNearDayLow, "Close was near the daily low."));
+        }
+
+        if (direction is null)
+        {
+            return Reject(instrument, DecisionReasonCode.CloseLocationNotConfirmed, "Close location did not confirm a long or short directional bias.");
+        }
+
+        var score = Math.Round(volumeExpansionRatio + closeLocation, 4);
+        return new CandidateDecision(instrument, DecisionOutcome.Accepted, direction, score, reasons);
+    }
+
+    private static decimal CalculateCloseLocation(DailyBar bar)
+    {
+        var range = bar.High - bar.Low;
+        return range <= 0 ? 0.5m : (bar.Close - bar.Low) / range;
+    }
+
+    private static CandidateDecision Reject(
+        Instrument instrument,
+        DecisionReasonCode code,
+        string description) =>
+        new(
+            instrument,
+            DecisionOutcome.Rejected,
+            null,
+            0m,
+            [new DecisionReason(code, description)]);
+}

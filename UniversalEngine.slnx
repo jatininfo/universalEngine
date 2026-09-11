@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/UniversalEngine.Api/UniversalEngine.Api.csproj" />
+    <Project Path="src/UniversalEngine.Application/UniversalEngine.Application.csproj" />
+    <Project Path="src/UniversalEngine.Domain/UniversalEngine.Domain.csproj" />
+    <Project Path="src/UniversalEngine.Infrastructure/UniversalEngine.Infrastructure.csproj" />
+    <Project Path="src/UniversalEngine.Worker/UniversalEngine.Worker.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/UniversalEngine.Application.Tests/UniversalEngine.Application.Tests.csproj" />
+    <Project Path="tests/UniversalEngine.Domain.Tests/UniversalEngine.Domain.Tests.csproj" />
+    <Project Path="tests/UniversalEngine.Infrastructure.Tests/UniversalEngine.Infrastructure.Tests.csproj" />
+  </Folder>
+</Solution>
