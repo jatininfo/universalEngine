@@ -12,6 +12,24 @@ This repository is currently greenfield, so the first development step is to cre
 
 The first production boundary is notification-only. Order execution is intentionally excluded.
 
+Before locking the production roadmap, reconcile the external ChatGPT planning conversation referenced by the project owner:
+
+- https://chatgpt.com/c/6aa4ad7d-caec-83e8-8e68-28158761196a
+
+If the link is not directly readable, use `docs/external-planning-references.md` as the intake checklist and merge pasted/exported content into the PRD, development plan, backlog, and tests.
+
+The attached development plan is imported as source material at:
+
+- `docs/source-material/NSE_BSE_Trading_Agent_Development_Plan.md`
+
+Its requirements are part of the roadmap, but the document itself is treated as reference material. Implementation continues to follow the repository architecture, safety boundaries, and test-first slices below.
+
+Implementation status is tracked in:
+
+- `docs/implementation-status-report.md`
+
+Update that report whenever a planned feature is completed, partially completed, deferred, blocked, or materially changed.
+
 ## 2. Target Repository Structure
 
 ```text
@@ -45,6 +63,7 @@ Owns:
 - Signal and trade plan validation
 - Candidate decision models
 - Reason codes
+- Indicator values and scoring model primitives
 
 Must not depend on:
 
@@ -74,15 +93,24 @@ Key services:
 - `RiskSizingService`
 - `NotificationTriggerService`
 - `ScannerRunCoordinator`
+- `TechnicalIndicatorService`
+- `ScannerScoringService`
+- `MarketRegimeAnalysisService`
+- `AiTradeAnalysisService`
+- `RiskVerdictService`
 
 ### `UniversalEngine.Infrastructure`
 
 Owns:
 
 - SQLite persistence
+- PostgreSQL persistence for production
+- Redis cache for live/short-lived state
 - Market-data providers
 - CSV fixture provider
 - Notification senders
+- LLM provider adapter
+- Message bus adapter in later phases
 - Exchange calendar provider
 - System clock
 - Logging/health-check integrations
@@ -190,6 +218,7 @@ Deliverables:
 - Add EOD candidate scoring model.
 - Add opening-range validation model.
 - Add live validation model.
+- Add `NO TRADE` as a first-class verdict.
 
 Reason-code examples:
 
@@ -213,6 +242,63 @@ Tests:
 Acceptance criteria:
 
 - Every scanner decision can be explained with machine-readable reasons.
+
+## 6A. Milestone 2A: Deterministic Technical Analysis
+
+Deliverables:
+
+- Add indicator models and services for:
+  - RSI
+  - EMA 20, 50, and 200
+  - VWAP
+  - ATR
+  - ADX
+  - MACD
+  - Volume ratio
+  - Price change
+  - Open-interest change
+  - Put-call ratio, once options data is available
+  - Support/resistance
+  - Distance from 52-week high/low
+  - Opening range
+  - Relative strength
+  - Breakout/breakdown status
+- Add deterministic tests with known fixture values.
+- Keep all indicator calculations outside the LLM.
+
+Acceptance criteria:
+
+- Indicators are deterministic and unit tested.
+- Invalid or insufficient input data produces explainable rejection reasons.
+- Indicator outputs include source timestamps for stale-data checks.
+
+## 6B. Milestone 2B: Scanner Scoring Engine
+
+Deliverables:
+
+- Implement configurable 100-point scoring model.
+- Initial factors:
+  - Price momentum
+  - Volume
+  - Open interest
+  - Delivery
+  - VWAP
+  - EMA structure
+  - Breakout/breakdown
+  - Market regime
+  - News/sentiment, once available
+- Add score-band interpretation:
+  - `85-100`: strong candidate
+  - `75-84`: candidate
+  - `65-74`: watchlist
+  - `<65`: ignore
+- Version the scoring model.
+
+Acceptance criteria:
+
+- Score calculation is testable without infrastructure.
+- Score and factor contribution are persisted with candidate decisions.
+- Thresholds are configurable for later calibration.
 
 ## 7. Milestone 3: Application Workflow Services
 
@@ -278,7 +364,10 @@ Acceptance criteria:
 
 Deliverables:
 
-- Choose SQLite with EF Core or Dapper.
+- Use SQLite for early local development.
+- Plan PostgreSQL for production persistence.
+- Plan Redis for current prices, latest indicators, candidate lists, and short-lived market state.
+- Choose EF Core or Dapper for relational persistence.
 - Add schema/migrations.
 - Persist:
   - Instruments
@@ -286,16 +375,22 @@ Deliverables:
   - Intraday bars
   - Scanner runs
   - Candidates
+  - Candidate scores and factor contributions
   - Signals
   - Trade plans
   - Monitor events
   - Notifications
+  - AI analysis responses
+  - Risk verdicts
+  - Prompt/scoring/risk-rule versions
+  - Outcomes and accuracy fields
 - Add repository implementation.
 
 Tests:
 
 - Save and read scanner run.
 - Save and read candidate reasons.
+- Save and read scanner score contributions.
 - Save and read trade plan risk values.
 - Notification idempotency key prevents duplicates.
 
@@ -304,11 +399,45 @@ Acceptance criteria:
 - Scanner state survives process restart.
 - Database can explain past decisions.
 
+## 9A. Milestone 5A: AI Analysis Agent
+
+Deliverables:
+
+- Add LLM adapter interface.
+- Convert the scanner prompt into versioned system instructions.
+- Send structured facts only after deterministic filtering.
+- Require structured JSON output.
+- Validate response schema before accepting any AI decision.
+- Add invalidation reasons and confidence/probability estimates.
+
+Acceptance criteria:
+
+- LLM is not called for the full market universe.
+- Invalid JSON or missing required fields are rejected.
+- Prompt version is persisted with each AI analysis.
+- AI probability/confidence is clearly treated as an estimate.
+
+## 9B. Milestone 5B: Market Regime And Risk Verdict
+
+Deliverables:
+
+- Add market-regime inputs for NIFTY, BANK NIFTY, India VIX, market breadth, FII/DII activity, and global context where data is available.
+- Add `RiskVerdictService`.
+- Produce final `TRADE` or `NO TRADE` verdict.
+- Include liquidity, risk/reward, stop reasonableness, market-regime support, conflicting signals, daily risk availability, duplicate-signal prevention, and data freshness.
+
+Acceptance criteria:
+
+- `NO TRADE` is persisted and tested as a valid result.
+- Risk verdict runs after scanner/AI analysis.
+- Final notification is blocked unless the risk verdict approves it.
+
 ## 10. Milestone 6: Notification MVP
 
 Deliverables:
 
 - Add console/log notification sender.
+- Add Telegram/email notification adapters after console/log sender.
 - Add notification templates.
 - Add idempotency keys.
 - Add rate limiting per symbol and signal type.
@@ -367,6 +496,8 @@ Deliverables:
 - Health checks.
 - Metrics counters.
 - Operational notification for system failures.
+- Version tracking for prompts, scoring models, and risk rules.
+- API resilience policies: timeouts, retries, exponential backoff, circuit breakers, and rate-limit handling.
 
 Minimum health checks:
 
@@ -381,12 +512,13 @@ Acceptance criteria:
 - Failed provider calls are visible.
 - Stale data decisions are visible.
 - Notification failures are visible.
+- Prompt/scoring/risk-rule versions are traceable from historical decisions.
 
 ## 13. Milestone 9: Real Market-Data Adapter
 
 Deliverables:
 
-- Implement Dhan first as the primary provider.
+- Implement Dhan first as the primary provider. Started for historical daily and intraday candles.
 - Keep Zerodha and Groww as configurable alternatives behind the same interface.
 - Implement provider adapter behind `IMarketDataProvider`.
 - Add throttling.
@@ -400,8 +532,112 @@ Acceptance criteria:
 - Dhan is the default provider in configuration.
 - Scanner behavior remains testable with fixture data.
 - Live data freshness is enforced before signal generation.
+- Dhan credentials are read from configuration or `DHAN_ACCESS_TOKEN`, never committed.
+- Dhan instruments require configured `SecurityId`.
 
-## 14. Milestone 10: Optional API/Dashboard
+## 14. Milestone 10: Accuracy Feedback Database
+
+Deliverables:
+
+- Store every recommendation, rejected signal, notification, paper trade, and outcome.
+- Track:
+  - Prediction timestamp
+  - Symbol
+  - Direction
+  - Trade type
+  - Entry
+  - Stop
+  - Targets
+  - Probability
+  - Confidence
+  - Technical score
+  - Market regime
+  - Open interest
+  - Volume
+  - Delivery
+  - Reasons
+  - Invalidations
+  - Verdict
+  - Actual entry/exit
+  - Outcome
+  - PnL
+  - Max favorable excursion
+  - Max adverse excursion
+- Add calibration reports by confidence band, direction, regime, sector, time of day, breakout type, volume category, OI pattern, day of week, and volatility regime.
+
+Acceptance criteria:
+
+- Rejected signals are stored, not discarded.
+- Accuracy can be measured by confidence band.
+- Data is sufficient to recalibrate thresholds from evidence.
+
+## 15. Milestone 11: Historical Replay And Backtesting
+
+Deliverables:
+
+- Add replay engine using historical data.
+- Run the same scanner/risk logic used by live processing.
+- Add simulated execution and performance report.
+- Include slippage and brokerage/fee assumptions.
+- Avoid look-ahead bias.
+
+Metrics:
+
+- Win rate
+- Profit factor
+- Average winner
+- Average loser
+- Expectancy
+- Maximum drawdown
+- Sharpe ratio where meaningful
+- Risk/reward
+- False-breakout rate
+- Slippage
+- Brokerage/fees
+- Performance by market regime
+
+Acceptance criteria:
+
+- Replay exposes only information available at the simulated timestamp.
+- Backtest output is persisted and reproducible.
+- Paper trading is not started until replay is working.
+
+## 16. Milestone 12: Paper Trading
+
+Deliverables:
+
+- Add paper order model.
+- Simulate entries and exits from live signals.
+- Monitor paper positions.
+- Persist simulated outcome and accuracy data.
+
+Acceptance criteria:
+
+- Paper trading runs without broker credentials.
+- Paper trading uses the same risk controls as notifications.
+- Real-money execution remains disabled.
+
+## 17. Milestone 13: Event-Driven Architecture
+
+Deliverables:
+
+- Introduce message events when needed:
+  - `MarketDataUpdated`
+  - `BreakoutDetected`
+  - `VolumeSpikeDetected`
+  - `VwapCrossDetected`
+  - `OIChangeDetected`
+  - `SignalCreated`
+  - `SignalApproved`
+- Add message bus adapter, with Azure Service Bus as the likely production option.
+
+Acceptance criteria:
+
+- Components can be tested independently.
+- Event handlers are idempotent.
+- Message processing has retry/dead-letter behavior.
+
+## 18. Milestone 14: Optional API/Dashboard
 
 Deliverables:
 
@@ -410,6 +646,8 @@ Deliverables:
 - Latest candidates endpoint.
 - Active signals endpoint.
 - Notification history endpoint.
+- Accuracy and calibration endpoints.
+- Angular dashboard in later production scope.
 
 Acceptance criteria:
 
@@ -417,15 +655,45 @@ Acceptance criteria:
 - API cannot place orders.
 - API exposes explainability data.
 
-## 15. Testing Strategy
+## 19. Milestone 15: Broker Integration Guarded Phase
+
+Deliverables:
+
+- Manual approval workflow first: agent alert -> human approval -> broker.
+- Optional broker execution only after backtesting and paper trading evidence.
+- Add safeguards:
+  - Maximum risk per trade
+  - Maximum daily loss
+  - Maximum concurrent positions
+  - Maximum trades per day
+  - Duplicate-order prevention
+  - Order-state reconciliation
+  - Slippage protection
+  - Stale-data protection
+  - Emergency kill switch
+  - API failure handling
+  - Circuit breaker
+  - Audit logging
+
+Acceptance criteria:
+
+- Broker credentials are never committed.
+- Automated execution is disabled by default.
+- Human approval path exists before any direct execution path.
+
+## 20. Testing Strategy
 
 Unit tests:
 
 - Domain value objects
 - Risk sizing
 - Candidate decisions
+- Technical indicators
+- Scoring model
 - Signal validation
 - Notification eligibility
+- Risk verdicts
+- AI output schema validation
 
 Application tests:
 
@@ -433,11 +701,14 @@ Application tests:
 - Stale data handling
 - Duplicate suppression
 - Restart recovery behavior
+- NO TRADE verdict behavior
+- LLM call gating after deterministic filters
 
 Infrastructure tests:
 
 - CSV parsing
-- SQLite repository
+- SQLite/PostgreSQL repository
+- Redis cache adapter
 - Notification idempotency
 - Provider retry behavior
 
@@ -445,8 +716,9 @@ End-to-end replay:
 
 - Run a full day from local fixtures.
 - Verify candidates, signals, trade plans, and notifications.
+- Verify feedback rows are stored.
 
-## 16. Development Order
+## 21. Development Order
 
 Recommended order:
 
@@ -456,14 +728,28 @@ Recommended order:
 4. Implement decision/reason model. Started for EOD candidates.
 5. Implement application workflow with fakes. Started for EOD candidate generation.
 6. Add CSV market data. Started for daily bars.
-7. Add persistence.
-8. Add notification MVP.
-9. Add worker scheduling.
-10. Add observability.
-11. Add real market-data adapter.
-12. Add optional read-only API.
+7. Add local worker startup replay. Started for EOD CSV replay.
+8. Add deterministic indicators.
+9. Add configurable scoring engine.
+10. Add persistence.
+11. Add notification MVP.
+12. Add worker scheduling.
+13. Add observability.
+14. Add real market-data adapter.
+15. Add AI analysis with structured JSON.
+16. Add market-regime/risk verdict.
+17. Add feedback database.
+18. Add backtesting.
+19. Add paper trading.
+20. Add optional read-only API/dashboard.
+21. Consider guarded broker integration only after evidence.
 
-## 17. Safety Checklist
+Planning checkpoint:
+
+- Attached development plan has been imported into `docs/source-material/` and reconciled into the roadmap.
+- Before implementing real broker execution, verify backtesting, paper trading, and safety milestones are complete.
+
+## 22. Safety Checklist
 
 Before any release:
 
@@ -474,8 +760,11 @@ Before any release:
 - Stale data blocks signal generation.
 - Duplicate notification suppression is tested.
 - Scanner run decisions are auditable.
+- `NO TRADE` is an accepted outcome.
+- Prompt, scoring model, and risk-rule versions are stored with decisions once AI/scoring phases exist.
+- Broker execution remains disabled until the guarded broker milestone.
 
-## 18. First Implementation Ticket
+## 23. First Implementation Ticket
 
 Title:
 

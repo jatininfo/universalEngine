@@ -13,6 +13,18 @@ Build a notification-first C#/.NET automation system for Indian equity intraday 
 
 The system must clearly separate signal generation from order execution. MVP scope must not place orders, store broker credentials, or include live trading automation. Risk rules start with configurable capital and planned-risk limits, defaulting to `₹20,000` deployable capital and `₹200-₹400` maximum planned risk per trade.
 
+The project owner also referenced an external ChatGPT planning conversation that must be reconciled before the production roadmap is finalized:
+
+- https://chatgpt.com/c/6aa4ad7d-caec-83e8-8e68-28158761196a
+
+If the link is not readable from the agent environment, use `docs/external-planning-references.md` as the intake note and merge the pasted/exported content into this plan.
+
+The attached `NSE_BSE_Trading_Agent_Development_Plan.md` has been imported as source material at:
+
+- `docs/source-material/NSE_BSE_Trading_Agent_Development_Plan.md`
+
+Its major roadmap additions are included in the PRD and development plan: deterministic technical analysis, scanner scoring, structured AI analysis, separate Risk Agent verdict, `NO TRADE` as a valid outcome, PostgreSQL/Redis production persistence, feedback/accuracy storage, backtesting, paper trading, and guarded broker integration as the final phase.
+
 ## Current Repository State
 
 The repository currently contains only `README.md`, so this is effectively a greenfield implementation. The plan below proposes the initial .NET solution structure and boundaries.
@@ -483,11 +495,35 @@ Example options:
 ### Phase 4: Real Market Data Provider
 
 - Add provider adapter behind existing interfaces.
+- Dhan historical daily and intraday candle adapter is the first production provider path.
+- Dhan access token must come from configuration or `DHAN_ACCESS_TOKEN`; it must not be committed.
+- Dhan instruments require `SecurityId` in scanner configuration.
 - Add data freshness checks.
 - Add provider throttling and retries.
 - Keep file-backed provider for tests and local replay.
 
-### Phase 5: Production Hardening
+### Phase 5: Deterministic Indicators And Scoring
+
+- Implement RSI, EMA, VWAP, ATR, ADX, MACD, volume ratio, price change, OI change, support/resistance, opening range, relative strength, and breakout/breakdown calculations.
+- Add configurable scoring model with factor contributions.
+- Persist score versions and factor outputs.
+
+### Phase 6: AI Analysis And Risk Verdict
+
+- Add structured AI input after deterministic filtering.
+- Enforce validated JSON output.
+- Persist prompt versions and AI responses.
+- Add separate Risk Agent final verdict.
+- Treat `NO TRADE` as a valid result.
+
+### Phase 7: Feedback, Backtesting, And Paper Trading
+
+- Store every recommendation, rejection, notification, and outcome.
+- Add historical replay and backtesting.
+- Add paper trading before broker execution.
+- Calibrate scores and thresholds from evidence.
+
+### Phase 8: Production Hardening
 
 - Add real notification channel.
 - Add monitoring dashboard/API if needed.
@@ -495,7 +531,7 @@ Example options:
 - Add end-to-end replay tests for known market days.
 - Add deployment documentation.
 
-### Phase 6: Optional Execution Boundary
+### Phase 9: Optional Execution Boundary
 
 Only after the notification system is stable, a separate execution project can be considered. It should consume approved `TradePlan` objects and remain isolated behind explicit manual enablement. This phase is intentionally out of MVP scope.
 

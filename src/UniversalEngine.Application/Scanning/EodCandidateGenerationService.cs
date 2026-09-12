@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Options;
 using UniversalEngine.Application.Abstractions;
+using UniversalEngine.Application.Analysis;
 using UniversalEngine.Application.Configuration;
 using UniversalEngine.Domain.Market;
 using UniversalEngine.Domain.Scanning;
@@ -8,6 +9,8 @@ namespace UniversalEngine.Application.Scanning;
 
 public sealed class EodCandidateGenerationService(
     IMarketDataProvider marketDataProvider,
+    TechnicalIndicatorService technicalIndicatorService,
+    ScannerScoringService scannerScoringService,
     IOptions<EodScannerOptions> options)
 {
     private readonly EodScannerOptions _options = options.Value;
@@ -65,6 +68,7 @@ public sealed class EodCandidateGenerationService(
             .Where(bar => bar.Date < latestBar.Date)
             .OrderByDescending(bar => bar.Date)
             .Take(_options.LookbackDays)
+            .OrderBy(bar => bar.Date)
             .ToArray();
 
         if (history.Length < _options.LookbackDays)
@@ -78,14 +82,15 @@ public sealed class EodCandidateGenerationService(
             return Reject(instrument, DecisionReasonCode.InsufficientLiquidity, "Average traded value is below the configured liquidity threshold.");
         }
 
-        var averageVolume = history.Average(bar => (decimal)bar.Volume);
-        var volumeExpansionRatio = averageVolume <= 0 ? 0 : latestBar.Volume / averageVolume;
+        var analysisBars = history.Append(latestBar).ToArray();
+        var technicalSnapshot = technicalIndicatorService.Calculate(analysisBars);
+        var volumeExpansionRatio = technicalSnapshot.VolumeRatio;
         if (volumeExpansionRatio < _options.MinimumVolumeExpansionRatio)
         {
             return Reject(instrument, DecisionReasonCode.InsufficientVolumeExpansion, "Latest volume did not expand enough versus the lookback average.");
         }
 
-        var closeLocation = CalculateCloseLocation(latestBar);
+        var closeLocation = technicalSnapshot.CloseLocation;
         var reasons = new List<DecisionReason>
         {
             new(DecisionReasonCode.AverageTradedValuePassed, "Average traded value passed the configured liquidity threshold."),
@@ -109,14 +114,8 @@ public sealed class EodCandidateGenerationService(
             return Reject(instrument, DecisionReasonCode.CloseLocationNotConfirmed, "Close location did not confirm a long or short directional bias.");
         }
 
-        var score = Math.Round(volumeExpansionRatio + closeLocation, 4);
-        return new CandidateDecision(instrument, DecisionOutcome.Accepted, direction, score, reasons);
-    }
-
-    private static decimal CalculateCloseLocation(DailyBar bar)
-    {
-        var range = bar.High - bar.Low;
-        return range <= 0 ? 0.5m : (bar.Close - bar.Low) / range;
+        var scannerScore = scannerScoringService.Score(technicalSnapshot, direction.Value);
+        return new CandidateDecision(instrument, DecisionOutcome.Accepted, direction, scannerScore.Total, reasons, scannerScore);
     }
 
     private static CandidateDecision Reject(
