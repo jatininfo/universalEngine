@@ -29,7 +29,10 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
         var runId = Guid.NewGuid().ToString("N");
         await InsertRunAsync(connection, runId, result, marketDataProvider, cancellationToken);
 
-        var verdictsByInstrument = verdicts.ToDictionary(verdict => verdict.Candidate.Instrument.Key);
+        // verdicts may contain multiple entries for the same instrument key; group and select the first
+        var verdictsByInstrument = verdicts
+            .GroupBy(verdict => verdict.Candidate.Instrument.Key)
+            .ToDictionary(g => g.Key, g => g.First());          
         foreach (var decision in result.Decisions)
         {
             verdictsByInstrument.TryGetValue(decision.Instrument.Key, out var verdict);
