@@ -7,7 +7,11 @@ public sealed record CandidateDecision(
     DecisionOutcome Outcome,
     CandidateDirection? Direction,
     decimal Score,
-    IReadOnlyList<DecisionReason> Reasons)
+    IReadOnlyList<DecisionReason> Reasons,
+    ScannerScore? ScannerScore = null,
+    decimal? EntryPrice = null,
+    decimal? StopPrice = null,
+    decimal? TargetPrice = null)
 {
     public bool IsAccepted => Outcome == DecisionOutcome.Accepted;
 }

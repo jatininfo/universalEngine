@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Options;
 using UniversalEngine.Application.Abstractions;
+using UniversalEngine.Application.Analysis;
 using UniversalEngine.Application.Configuration;
 using UniversalEngine.Application.Scanning;
 using UniversalEngine.Domain.Market;
@@ -56,6 +57,8 @@ public sealed class EodCandidateGenerationServiceTests
         EodScannerOptions? options = null) =>
         new(
             new FakeMarketDataProvider(bars),
+            new TechnicalIndicatorService(),
+            new ScannerScoringService(),
             Options.Create(options ?? new EodScannerOptions { LookbackDays = 3, MinimumAverageTradedValue = 1_000_000m }));
 
     private static IReadOnlyList<DailyBar> CreateBars(

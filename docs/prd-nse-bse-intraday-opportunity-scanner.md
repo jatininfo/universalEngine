@@ -53,8 +53,10 @@ Secondary users:
 
 - Notification-first, execution-never-by-default.
 - Explain every decision.
+- `NO TRADE` is a valid and expected result.
 - Reject uncertain signals when data is stale or incomplete.
 - Risk controls are mandatory, not advisory.
+- Deterministic calculations belong in C#; LLMs receive structured facts and produce validated structured judgments.
 - Build local and testable before connecting real-time dependencies.
 - Keep future broker execution isolated from the signal system.
 
@@ -251,7 +253,90 @@ Acceptance criteria:
 - Failed delivery attempts are recorded.
 - System health issues can produce separate operational notifications.
 
-## 10. Data Requirements
+## 10. Deterministic Analysis Requirements
+
+The system must calculate technical and market-structure features in application code before any LLM analysis is considered.
+
+Required indicator roadmap:
+
+- RSI
+- EMA 20, 50, and 200
+- VWAP
+- ATR
+- ADX
+- MACD
+- Volume ratio
+- Price change
+- Open-interest change
+- Put-call ratio where options data is available
+- Support and resistance levels
+- Distance from 52-week high/low
+- Opening range
+- Relative strength
+- Breakout/breakdown status
+
+Acceptance criteria:
+
+- Indicator calculation is deterministic and unit tested.
+- The LLM is never responsible for calculating raw indicators.
+- Every indicator value includes enough source/timestamp context to detect stale or incomplete data.
+
+## 11. Scoring And AI Analysis Requirements
+
+The scanner should reduce the NSE/BSE universe into a manageable candidate list before invoking any AI reasoning.
+
+Initial scoring categories:
+
+- Price momentum
+- Volume
+- Open interest
+- Delivery
+- VWAP
+- EMA structure
+- Breakout/breakdown
+- Market regime
+- News/sentiment, once available
+
+Suggested interpretation:
+
+- `85-100`: strong candidate
+- `75-84`: candidate
+- `65-74`: watchlist
+- `<65`: ignore
+
+AI analysis requirements:
+
+- Accept structured facts only.
+- Return validated JSON only.
+- Include direction, probability estimate, confidence estimate, entry, stop, targets, reasons, and invalidations.
+- Treat AI probability/confidence as estimates, not guaranteed probabilities.
+- Version the prompt, scoring model, and risk rules used to produce each decision.
+
+Acceptance criteria:
+
+- Invalid LLM JSON is rejected.
+- Missing required fields prevent notification.
+- AI analysis is triggered only after deterministic filters or meaningful live-market events.
+
+## 12. Market Regime And Risk Agent Requirements
+
+Market-regime analysis may include:
+
+- NIFTY
+- BANK NIFTY
+- India VIX
+- Market breadth
+- FII/DII activity
+- Global-market context
+
+Risk Agent requirements:
+
+- Run after scanner/AI analysis.
+- Decide final `TRADE` or `NO TRADE`.
+- Check liquidity, risk/reward, stop reasonableness, market-regime support, conflicting signals, daily risk availability, duplicate signals, and data freshness.
+- Persist the reason for both approved and rejected decisions.
+
+## 13. Data Requirements
 
 Market data:
 
@@ -260,6 +345,8 @@ Market data:
 - Intraday OHLCV
 - Optional delivery data
 - Optional index/sector data
+- Optional open-interest and options-chain data
+- Optional market breadth, India VIX, FII/DII, and news/event data
 
 Data quality:
 
@@ -279,7 +366,7 @@ Production data source:
 - Zerodha and Groww are planned configurable alternatives.
 - Provider credentials must remain outside the repository.
 
-## 11. Persistence Requirements
+## 14. Persistence Requirements
 
 The system should persist:
 
@@ -293,6 +380,12 @@ The system should persist:
 - Trade plans
 - Monitor events
 - Notification attempts
+- Scanner scores
+- AI analysis outputs
+- Risk verdicts
+- Prompt/scoring/risk-rule versions
+- Actual entries/exits and outcomes for paper trading or later execution
+- Max favorable excursion and max adverse excursion where available
 
 The database should support answering:
 
@@ -301,8 +394,54 @@ The database should support answering:
 - Which data did the scanner use?
 - What risk did the scanner plan?
 - Was the user notified?
+- Which prompt, scoring model, and risk-rule version produced the decision?
+- Did the signal later succeed or fail?
 
-## 12. Observability Requirements
+Production storage direction:
+
+- PostgreSQL for historical snapshots, signals, trade plans, outcomes, and accuracy data.
+- Redis for current prices, latest indicators, candidate lists, and other short-lived state.
+- SQLite remains acceptable for early local development only.
+
+## 15. Backtesting, Paper Trading, And Feedback Requirements
+
+Before live execution is considered, the same scanner/risk logic must run through historical replay and paper trading.
+
+Backtesting must measure:
+
+- Win rate
+- Profit factor
+- Average winner
+- Average loser
+- Expectancy
+- Maximum drawdown
+- Sharpe ratio where meaningful
+- Risk/reward
+- False-breakout rate
+- Slippage
+- Brokerage/fees
+- Performance by market regime
+
+Feedback analysis should evaluate performance by:
+
+- Confidence band
+- Long versus short
+- Market regime
+- Sector
+- Time of day
+- Breakout type
+- Volume category
+- Open-interest pattern
+- Day of week
+- Volatility regime
+
+Acceptance criteria:
+
+- Historical replay avoids look-ahead bias.
+- Paper trading runs across a meaningful number of signals before broker execution is considered.
+- Every recommendation, rejection, paper trade, and outcome is stored for calibration.
+
+## 16. Observability Requirements
 
 Logs should include:
 
@@ -315,6 +454,14 @@ Logs should include:
 - Provider
 - Data timestamp
 - Latency
+- Correlation ID
+- Input snapshot reference
+- Rule-engine result
+- Prompt/version
+- AI response reference
+- Risk decision
+- Notification result
+- Final outcome, when known
 
 Health checks should cover:
 
@@ -323,16 +470,20 @@ Health checks should cover:
 - Latest successful EOD run
 - Latest live poll
 - Notification channel status
+- Cache availability
+- Message bus availability, once introduced
 
-## 13. Failure Requirements
+## 17. Failure Requirements
 
 - If market data is stale, skip signal generation.
 - If a provider fails, retry with backoff.
 - If retries fail, record the failure and notify operationally if configured.
 - If the worker restarts, resume from persisted scanner state.
 - If notification delivery fails, retry without generating duplicate user alerts.
+- Reject or quarantine invalid OHLC values, abnormal timestamps, duplicate ticks, unexpected price gaps, and incomplete candles.
+- Use timeouts, controlled retries, exponential backoff, circuit breakers, and rate-limit handling for external APIs.
 
-## 14. MVP Scope
+## 18. MVP Scope
 
 MVP includes:
 
@@ -357,8 +508,27 @@ MVP excludes:
 - Public dashboard
 - Strategy optimization
 - Machine learning
+- Automated broker execution
+- Fully automated real-money trading
+- Angular dashboard
 
-## 15. Success Metrics
+## 19. Later Production Scope
+
+Later roadmap items from the attached development plan:
+
+- PostgreSQL persistence and Redis cache.
+- Event-driven architecture with a message bus such as Azure Service Bus.
+- Telegram/email notification channels.
+- LLM-backed AI analysis with validated JSON.
+- Market-regime agent.
+- Risk Agent final verdict stage.
+- Historical replay/backtesting.
+- Paper trading.
+- Angular dashboard.
+- Broker integration with manual approval first.
+- Optional automated execution only after validation and safeguards.
+
+## 20. Success Metrics
 
 Product success:
 
@@ -367,6 +537,8 @@ Product success:
 - Sends no signal notification unless risk constraints pass.
 - Runs the full workflow in local replay mode.
 - Recovers from restart without duplicate notifications.
+- Produces `NO TRADE` when evidence is insufficient.
+- Stores recommendation and outcome data for later calibration.
 
 Engineering success:
 
@@ -375,9 +547,14 @@ Engineering success:
 - Notifications are idempotent.
 - Scanner runs are auditable.
 - Future execution integration can be added without modifying signal-generation rules.
+- Deterministic indicators, scoring model, prompt version, and risk-rule version are traceable.
 
-## 16. Open Decisions
+## 21. Open Decisions
 
+- Merge requirements from the external ChatGPT planning conversation once the content is available:
+  - https://chatgpt.com/c/6aa4ad7d-caec-83e8-8e68-28158761196a
+- Resolve how much of the attached plan belongs in MVP versus later production scope:
+  - `docs/source-material/NSE_BSE_Trading_Agent_Development_Plan.md`
 - Dhan is the preferred first market-data provider for production.
 - Zerodha and Groww adapter priority after Dhan.
 - Whether to use EF Core or Dapper for persistence.
@@ -385,3 +562,4 @@ Engineering success:
 - First real notification channel after console/log output.
 - Default opening range duration: 5, 15, or 30 minutes.
 - Initial strategy rule thresholds for liquidity, volume expansion, and gap limits.
+- Whether Redis and Azure Service Bus are introduced in the first deployed environment or after the local MVP.
