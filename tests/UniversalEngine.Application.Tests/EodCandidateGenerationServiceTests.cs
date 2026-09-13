@@ -96,7 +96,7 @@ public sealed class EodCandidateGenerationServiceTests
         return bars;
     }
 
-    private sealed class FakeMarketDataProvider(IReadOnlyList<DailyBar> bars) : IMarketDataProvider
+    private sealed class FakeMarketDataProvider(IReadOnlyList<DailyBar> bars) : IAnalysisMarketDataProvider
     {
         public Task<IReadOnlyList<DailyBar>> GetDailyBarsAsync(
             IReadOnlyList<Instrument> instruments,

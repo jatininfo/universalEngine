@@ -136,6 +136,17 @@ Owns:
 - Candidate and active signal read endpoints
 - Notification history read endpoints
 
+### `web/universal-engine-dashboard`
+
+Owns:
+
+- Decoupled read-only dashboard UI.
+- API-backed scanner, validation, monitoring, notification, and lookup views.
+- Selected-date pipeline readiness and prerequisite counts before manual stage runs.
+- No scanner orchestration, broker execution, provider adapters, or direct database access.
+
+The dashboard consumes `UniversalEngine.Api` as its boundary so the worker and core services remain independent and replaceable.
+
 ## 4. Milestone 0: Repository Bootstrap
 
 Deliverables:
@@ -647,13 +658,14 @@ Deliverables:
 - Active signals endpoint.
 - Notification history endpoint.
 - Accuracy and calibration endpoints.
-- Angular dashboard in later production scope.
+- Decoupled dashboard app in later production scope.
 
 Acceptance criteria:
 
 - API is read-only for MVP.
 - API cannot place orders.
 - API exposes explainability data.
+- Dashboard calls only the read-only API and does not directly reference worker, infrastructure, broker, or provider services.
 
 ## 19. Milestone 15: Broker Integration Guarded Phase
 

@@ -8,6 +8,8 @@ public sealed class OpeningRangeOptions
 
     public bool Enabled { get; set; }
 
+    public bool EnableScheduledScan { get; set; }
+
     public int RangeMinutes { get; set; } = 15;
 
     public BarInterval Interval { get; set; } = BarInterval.FiveMinutes;

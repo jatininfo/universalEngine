@@ -8,7 +8,7 @@ using UniversalEngine.Domain.Scanning;
 namespace UniversalEngine.Application.Scanning;
 
 public sealed class EodCandidateGenerationService(
-    IMarketDataProvider marketDataProvider,
+    IAnalysisMarketDataProvider marketDataProvider,
     TechnicalIndicatorService technicalIndicatorService,
     ScannerScoringService scannerScoringService,
     IOptions<EodScannerOptions> options)
@@ -58,8 +58,10 @@ public sealed class EodCandidateGenerationService(
             return Reject(instrument, DecisionReasonCode.MissingDailyData, "Latest daily bar does not match the requested session date.");
         }
 
+        var now = DateTimeOffset.Now.ToOffset(latestBar.DataTimestamp.Offset);
         var sessionEnd = new DateTimeOffset(sessionDate.ToDateTime(TimeOnly.MaxValue), latestBar.DataTimestamp.Offset);
-        if (sessionEnd - latestBar.DataTimestamp > TimeSpan.FromHours(_options.MaxDailyDataAgeHours))
+        if (sessionDate == DateOnly.FromDateTime(now.DateTime) &&
+            sessionEnd - latestBar.DataTimestamp > TimeSpan.FromHours(_options.MaxDailyDataAgeHours))
         {
             return Reject(instrument, DecisionReasonCode.StaleDailyData, "Latest daily data is older than the configured freshness window.");
         }

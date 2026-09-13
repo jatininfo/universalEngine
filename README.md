@@ -42,6 +42,14 @@ Notification-first NSE/BSE intraday opportunity scanner built in C#/.NET.
     "PrimaryProvider": "Dhan",
     "EnabledProviders": [ "Dhan", "Zerodha", "Groww" ]
   },
+  "AnalysisData": {
+    "PrimaryProvider": "Yahoo",
+    "FallbackToBrokerProvider": false,
+    "Yahoo": {
+      "UseCache": true,
+      "CacheTtlMinutes": 1440
+    }
+  },
   "Risk": {
     "CapitalAmount": 20000,
     "MinPlannedRiskAmount": 200,
@@ -50,6 +58,8 @@ Notification-first NSE/BSE intraday opportunity scanner built in C#/.NET.
   }
 }
 ```
+
+`AnalysisData` is used for EOD analysis and backtesting so repeated scans do not burn broker market-data calls. `MarketData` remains the broker/final-validation source for Dhan-backed intraday checks, broker status, and future order-safe flows. Set `AnalysisData:PrimaryProvider` to `Yahoo`, `Csv`, or, only when intentionally needed, `Dhan` with `FallbackToBrokerProvider: true`.
 
 ## Build and Test
 
@@ -60,7 +70,7 @@ dotnet test UniversalEngine.slnx
 
 ## API Inspection
 
-The API exposes persisted scanner runs:
+The API exposes persisted scanner runs and is the only boundary used by the dashboard UI:
 
 ```powershell
 dotnet run --project src/UniversalEngine.Api/UniversalEngine.Api.csproj
@@ -69,12 +79,79 @@ dotnet run --project src/UniversalEngine.Api/UniversalEngine.Api.csproj
 Endpoints:
 
 - `GET /health`
+- `GET /scanner/instruments`
+- `GET /settings/data-sources`
 - `GET /scanner/runs/latest?limit=10`
 - `GET /scanner/runs/{runId}/candidates`
+- `GET /pre-market/runs/latest?limit=10`
+- `GET /pre-market/runs/{runId}/decisions`
+- `GET /opening-range/runs/latest?limit=10`
+- `GET /opening-range/runs/{runId}/decisions`
+- `GET /live-validation/runs/latest?limit=10`
+- `GET /live-validation/runs/{runId}/decisions`
+- `GET /monitor/runs/latest?limit=10`
+- `GET /monitor/runs/{runId}/events`
+- `GET /backtests/runs/latest?limit=10`
+- `GET /backtests/runs/{runId}/trades`
+- `GET /accuracy/backtests/summary?limit=100`
+- `GET /accuracy/backtests/by-direction?limit=100`
+- `GET /paper-trading/runs/latest?limit=10`
+- `GET /paper-trading/runs/{runId}/orders`
+- `GET /ai/runs/latest?limit=10`
+- `GET /ai/runs/{runId}/decisions`
+- `GET /events/latest?limit=25`
+- `GET /broker/status`
+- `GET /pipeline/status?sessionDate=2026-09-11`
 - `GET /notifications/attempts/latest?limit=20`
 - `GET /instruments/dhan/search?symbol=RELIANCE&exchange=NSE`
+- `POST /pipeline/eod/run?sessionDate=2026-09-11`
+- `POST /pipeline/pre-market/run?sessionDate=2026-09-11`
+- `POST /pipeline/opening-range/run?sessionDate=2026-09-11`
+- `POST /pipeline/live-validation/run?sessionDate=2026-09-11&from=09:30&to=10:00`
+- `POST /pipeline/monitor/run?sessionDate=2026-09-11&from=09:30&to=10:00`
+- `POST /paper-trading/run?sessionDate=2026-09-11`
+- `POST /ai/run?sessionDate=2026-09-11`
 
 The Dhan instrument search uses the published Dhan scrip master and returns `SecurityId` values for scanner config.
+
+## Dashboard UI
+
+The dashboard is a separate React/Vite app under `web/universal-engine-dashboard`. It is intentionally decoupled from worker and application services; it only reads from `UniversalEngine.Api`.
+
+Dashboard panels currently include:
+
+- API health and broker status
+- Latest EOD candidates
+- Active scanner instruments
+- Recent pipeline run status
+- Manual pipeline run controls for EOD, pre-market, opening-range, live validation, and monitor stages
+- Pipeline readiness and prerequisite counts for the selected session date
+- Pre-market, opening-range, and live-validation decision details
+- Monitor events
+- Persisted backtest reports and latest replay trades
+- Backtest accuracy summary
+- Backtest direction calibration
+- Paper trading runs and simulated orders
+- AI analysis runs and validated structured decisions
+- Event log for completed manual pipeline stages
+- Notification attempts
+- Dhan instrument lookup
+
+Run the API:
+
+```powershell
+dotnet run --project src/UniversalEngine.Api/UniversalEngine.Api.csproj
+```
+
+Run the dashboard:
+
+```powershell
+cd web/universal-engine-dashboard
+npm install
+npm run dev
+```
+
+Default dashboard API URL is `https://localhost:7071`. Override with `VITE_UNIVERSAL_ENGINE_API_URL` when needed.
 
 CLI lookup without starting the API:
 
@@ -107,6 +184,48 @@ Run one EOD scan immediately using configured instruments:
 
 ```powershell
 dotnet run --project src/UniversalEngine.Worker/UniversalEngine.Worker.csproj -- --run-eod-now
+```
+
+Run pre-market filtering for the latest persisted EOD candidates:
+
+```powershell
+dotnet run --project src/UniversalEngine.Worker/UniversalEngine.Worker.csproj -- --run-pre-market-now 2026-09-11
+```
+
+Check opening-range validation and risk sizing for one candidate:
+
+```powershell
+dotnet run --project src/UniversalEngine.Worker/UniversalEngine.Worker.csproj -- --check-opening-range NSE RELIANCE 2885 Long 2026-09-11
+```
+
+Run opening-range validation for the latest persisted EOD candidates:
+
+```powershell
+dotnet run --project src/UniversalEngine.Worker/UniversalEngine.Worker.csproj -- --run-opening-range-now 2026-09-11
+```
+
+Run live validation for latest persisted opening-range trade candidates:
+
+```powershell
+dotnet run --project src/UniversalEngine.Worker/UniversalEngine.Worker.csproj -- --run-live-validation-now 2026-09-11 09:30 10:00
+```
+
+Run signal monitoring for latest live-validated trade candidates, falling back to opening-range trade candidates:
+
+```powershell
+dotnet run --project src/UniversalEngine.Worker/UniversalEngine.Worker.csproj -- --run-monitor-now 2026-09-11 09:30 10:00
+```
+
+Run a simple EOD scanner backtest over configured instruments:
+
+```powershell
+dotnet run --project src/UniversalEngine.Worker/UniversalEngine.Worker.csproj -- --run-backtest 2026-09-08 2026-09-10
+```
+
+Check live validation and risk sizing for one candidate:
+
+```powershell
+dotnet run --project src/UniversalEngine.Worker/UniversalEngine.Worker.csproj -- --check-live-validation NSE RELIANCE 2885 Long 3000 2950 2026-09-11 09:30 10:00
 ```
 
 Telegram setup helpers:
@@ -160,6 +279,7 @@ Opening-range settings:
 {
   "OpeningRange": {
     "Enabled": false,
+    "EnableScheduledScan": false,
     "RangeMinutes": 15,
     "Interval": "FiveMinutes",
     "MarketOpenTime": "09:15",
@@ -171,6 +291,55 @@ Opening-range settings:
 
 This stage is scaffolded as a separate service and is ready to use Dhan intraday candles.
 Set `OpeningRange:Enabled` to `true` in local config when you want the worker to run it after EOD candidate generation.
+
+Live-validation settings:
+
+```json
+{
+  "LiveValidation": {
+    "Enabled": false,
+    "EnableScheduledScan": false,
+    "Interval": "FiveMinutes",
+    "StartTime": "09:30",
+    "EndTime": "15:15",
+    "PollMinutes": 5,
+    "ConfirmationBufferTicks": 0,
+    "MaxIntradayDataAgeMinutes": 10
+  }
+}
+```
+
+Signal-monitor settings:
+
+```json
+{
+  "Monitoring": {
+    "Enabled": false,
+    "EnableScheduledScan": false,
+    "Interval": "FiveMinutes",
+    "StartTime": "09:30",
+    "EndTime": "15:20",
+    "PollMinutes": 5,
+    "MaxIntradayDataAgeMinutes": 10
+  }
+}
+```
+
+Monitoring sends notification-only alerts when a watched candidate reaches target, breaches stop, or expires. It does not place orders.
+
+Backtest settings:
+
+```json
+{
+  "Backtest": {
+    "FromDate": "",
+    "ToDate": "",
+    "MaxHoldingDays": 1
+  }
+}
+```
+
+The first replay foundation evaluates EOD scanner signals using next available daily close. It is for calibration only and does not place orders.
 
 ## Dhan API Readiness
 

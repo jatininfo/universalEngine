@@ -25,6 +25,19 @@ public sealed class MarketDataOptions
     public ProviderCredentialOptions Groww { get; set; } = new();
 }
 
+public sealed class AnalysisDataOptions
+{
+    public const string SectionName = "AnalysisData";
+
+    public MarketDataProviderKind PrimaryProvider { get; set; } = MarketDataProviderKind.Dhan;
+
+    public bool UseHistoricalCache { get; set; } = true;
+
+    public int HistoricalCacheTtlHours { get; set; } = 24;
+
+    public string? HistoricalCacheRoot { get; set; }
+}
+
 public sealed class DhanMarketDataOptions
 {
     public string BaseUrl { get; set; } = "https://api.dhan.co/v2/";
