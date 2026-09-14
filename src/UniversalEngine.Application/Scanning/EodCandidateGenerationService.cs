@@ -34,7 +34,7 @@ public sealed class EodCandidateGenerationService(
             .Select(instrument => EvaluateInstrument(instrument, request.SessionDate, barsByInstrument))
             .ToArray();
 
-        return new EodCandidateGenerationResult(request.SessionDate, decisions);
+        return new EodCandidateGenerationResult(request.SessionDate, ApplyShortlistLimit(decisions));
     }
 
     private CandidateDecision EvaluateInstrument(
@@ -117,7 +117,45 @@ public sealed class EodCandidateGenerationService(
         }
 
         var scannerScore = scannerScoringService.Score(technicalSnapshot, direction.Value);
+        if (scannerScore.Total < _options.MinimumAcceptedScore)
+        {
+            reasons.Add(new DecisionReason(
+                DecisionReasonCode.ScannerScoreBelowThreshold,
+                $"Scanner score {scannerScore.Total:0.##} is below the configured threshold {_options.MinimumAcceptedScore:0.##}."));
+            return new CandidateDecision(instrument, DecisionOutcome.Rejected, direction, scannerScore.Total, reasons, scannerScore);
+        }
+
         return new CandidateDecision(instrument, DecisionOutcome.Accepted, direction, scannerScore.Total, reasons, scannerScore);
+    }
+
+    private CandidateDecision[] ApplyShortlistLimit(IReadOnlyList<CandidateDecision> decisions)
+    {
+        if (_options.MaxAcceptedCandidates <= 0)
+        {
+            return decisions.ToArray();
+        }
+
+        var acceptedKeys = decisions
+            .Where(decision => decision.IsAccepted)
+            .OrderByDescending(decision => decision.Score)
+            .ThenBy(decision => decision.Instrument.Key)
+            .Take(_options.MaxAcceptedCandidates)
+            .Select(decision => decision.Instrument.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return decisions
+            .Select(decision => decision.IsAccepted && !acceptedKeys.Contains(decision.Instrument.Key)
+                ? decision with
+                {
+                    Outcome = DecisionOutcome.Rejected,
+                    Reasons = decision.Reasons
+                        .Append(new DecisionReason(
+                            DecisionReasonCode.ScannerShortlistLimitExceeded,
+                            $"Candidate passed filters but was outside the top {_options.MaxAcceptedCandidates} configured EOD scores."))
+                        .ToArray()
+                }
+                : decision)
+            .ToArray();
     }
 
     private static CandidateDecision Reject(

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using UniversalEngine.Application.Abstractions;
 using UniversalEngine.Application.Ai;
 using UniversalEngine.Application.Analysis;
@@ -12,7 +13,6 @@ using UniversalEngine.Infrastructure;
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.AddFilter("System.Net.Http.HttpClient.TelegramNotificationSender", LogLevel.None);
 builder.Logging.AddFilter("System.Net.Http.HttpClient.DhanMarketDataProvider", LogLevel.Warning);
-builder.Logging.AddFilter("System.Net.Http.HttpClient.YahooFinanceMarketDataProvider", LogLevel.Warning);
 builder.Logging.AddFilter("System.Net.Http.HttpClient.BrokerConnectionVerifier", LogLevel.Warning);
 builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true);
 var workerLocalConfigPath = Path.GetFullPath(Path.Combine(
@@ -119,13 +119,98 @@ app.MapGet("/settings/data-sources", (
 {
     var marketData = marketDataOptions.Value;
     var analysisData = analysisDataOptions.Value;
+    var resolvedCacheRoot = ResolveHistoricalCacheRoot(analysisData);
+    var cacheEntryCount = Directory.Exists(resolvedCacheRoot)
+        ? Directory.EnumerateFiles(resolvedCacheRoot, "*_daily.json").Count()
+        : 0;
+
     return Results.Ok(new DataSourceSettingsResponse(
         AnalysisProvider: analysisData.PrimaryProvider.ToString(),
         BrokerProvider: marketData.PrimaryProvider.ToString(),
-        AnalysisFallbackToBroker: analysisData.FallbackToBrokerProvider,
-        YahooCacheEnabled: analysisData.Yahoo.UseCache,
-        YahooCacheTtlMinutes: analysisData.Yahoo.CacheTtlMinutes,
-        Message: "EOD analysis/backtesting use AnalysisData. Final intraday validation and broker checks use MarketData."));
+        HistoricalCacheEnabled: analysisData.UseHistoricalCache,
+        HistoricalCacheTtlHours: analysisData.HistoricalCacheTtlHours,
+        HistoricalCacheRoot: resolvedCacheRoot,
+        HistoricalCacheEntryCount: cacheEntryCount,
+        Message: "EOD analysis/backtesting use AnalysisData and may reuse historical daily-bar cache. Intraday/final validation and broker checks use live broker calls."));
+});
+
+app.MapGet("/settings/application", (
+    Microsoft.Extensions.Options.IOptions<RiskOptions> riskOptions,
+    Microsoft.Extensions.Options.IOptions<EodScannerOptions> eodOptions,
+    Microsoft.Extensions.Options.IOptions<AnalysisDataOptions> analysisOptions) =>
+{
+    var risk = riskOptions.Value;
+    var eod = eodOptions.Value;
+    var analysis = analysisOptions.Value;
+    return Results.Ok(new ApplicationSettingsResponse(
+        new RiskSettingsResponse(
+            risk.CapitalAmount,
+            risk.MinPlannedRiskAmount,
+            risk.MaxPlannedRiskAmount,
+            risk.MaxActiveSignals,
+            risk.AllowSmallRiskAlerts),
+        new EodScannerSettingsResponse(
+            eod.LookbackDays,
+            eod.MinimumAverageTradedValue,
+            eod.MinimumVolumeExpansionRatio,
+            eod.NearHighCloseThreshold,
+            eod.NearLowCloseThreshold,
+            eod.MaxDailyDataAgeHours,
+            eod.MinimumAcceptedScore,
+            eod.MaxAcceptedCandidates,
+            eod.FactorWeights),
+        new AnalysisSettingsResponse(
+            analysis.PrimaryProvider.ToString(),
+            analysis.UseHistoricalCache,
+            analysis.HistoricalCacheTtlHours),
+        "Credentials are intentionally excluded. Saved setting changes are written to local config and may require an app restart for long-lived services."));
+});
+
+app.MapPut("/settings/application", async (
+    ApplicationSettingsUpdateRequest request,
+    CancellationToken cancellationToken) =>
+{
+    if (request.Risk.CapitalAmount <= 0 ||
+        request.Risk.MinPlannedRiskAmount < 0 ||
+        request.Risk.MaxPlannedRiskAmount < request.Risk.MinPlannedRiskAmount ||
+        request.Risk.MaxActiveSignals < 1)
+    {
+        return Results.BadRequest(new { message = "Risk settings are invalid." });
+    }
+
+    if (request.EodScanner.LookbackDays < 1 ||
+        request.EodScanner.MinimumAverageTradedValue < 0 ||
+        request.EodScanner.MinimumVolumeExpansionRatio < 0 ||
+        request.EodScanner.NearHighCloseThreshold < 0 ||
+        request.EodScanner.NearHighCloseThreshold > 1 ||
+        request.EodScanner.NearLowCloseThreshold < 0 ||
+        request.EodScanner.NearLowCloseThreshold > 1 ||
+        request.EodScanner.MaxDailyDataAgeHours < 1 ||
+        request.EodScanner.MinimumAcceptedScore < 0 ||
+        request.EodScanner.MaxAcceptedCandidates < 0 ||
+        request.EodScanner.FactorWeights is null ||
+        request.EodScanner.FactorWeights.Values.Any(weight => weight < 0))
+    {
+        return Results.BadRequest(new { message = "EOD scanner settings are invalid." });
+    }
+
+    if (!Enum.TryParse<MarketDataProviderKind>(request.Analysis.PrimaryProvider, ignoreCase: true, out var provider) ||
+        provider is not (MarketDataProviderKind.Dhan or MarketDataProviderKind.Csv))
+    {
+        return Results.BadRequest(new { message = "Analysis provider must be Dhan or Csv." });
+    }
+
+    if (request.Analysis.HistoricalCacheTtlHours < 0)
+    {
+        return Results.BadRequest(new { message = "Historical cache TTL cannot be negative." });
+    }
+
+    await SaveApplicationSettingsAsync(workerLocalConfigPath, request, provider, cancellationToken);
+    return Results.Ok(new
+    {
+        message = "Settings saved to local config. Restart API/worker to guarantee all long-lived services use the new values.",
+        requiresRestart = true
+    });
 });
 
 app.MapGet("/pipeline/status", async (
@@ -232,6 +317,42 @@ app.MapGet("/scanner/instruments", (
         instruments.Length,
         options.GetDuplicateInstrumentKeys(),
         instruments));
+});
+
+app.MapPut("/scanner/instruments", async (
+    ScannerInstrumentsUpdateRequest request,
+    CancellationToken cancellationToken) =>
+{
+    var cleaned = request.Instruments
+        .Where(instrument => !string.IsNullOrWhiteSpace(instrument.Symbol))
+        .Select(instrument => new InstrumentSettingsRequest(
+            instrument.Symbol.Trim().ToUpperInvariant(),
+            string.IsNullOrWhiteSpace(instrument.Exchange) ? "Nse" : instrument.Exchange.Trim(),
+            string.IsNullOrWhiteSpace(instrument.Isin) ? null : instrument.Isin.Trim(),
+            string.IsNullOrWhiteSpace(instrument.SecurityId) ? null : instrument.SecurityId.Trim()))
+        .ToArray();
+
+    foreach (var instrument in cleaned)
+    {
+        if (!Enum.TryParse<UniversalEngine.Domain.Market.Exchange>(instrument.Exchange, ignoreCase: true, out _))
+        {
+            return Results.BadRequest(new { message = $"Unsupported exchange '{instrument.Exchange}' for {instrument.Symbol}." });
+        }
+    }
+
+    var duplicateKeys = cleaned
+        .GroupBy(instrument => $"{instrument.Exchange}:{instrument.Symbol}".ToUpperInvariant())
+        .Where(group => group.Count() > 1)
+        .Select(group => group.Key)
+        .ToArray();
+
+    if (duplicateKeys.Length > 0)
+    {
+        return Results.BadRequest(new { message = $"Duplicate instruments: {string.Join(", ", duplicateKeys)}" });
+    }
+
+    await SaveScannerInstrumentsAsync(workerLocalConfigPath, cleaned, cancellationToken);
+    return Results.Ok(new { message = "Scanner instruments saved to local config. Restart API/worker to guarantee all long-lived services use the new list.", count = cleaned.Length });
 });
 
 app.MapGet("/scanner/runs/latest", async (
@@ -775,6 +896,117 @@ static DateOnly ParseSessionDate(string? value, DateOnly fallback) =>
 static TimeOnly ParseTime(string? value, TimeOnly fallback) =>
     string.IsNullOrWhiteSpace(value) ? fallback : TimeOnly.Parse(value);
 
+static string ResolveHistoricalCacheRoot(AnalysisDataOptions options) =>
+    string.IsNullOrWhiteSpace(options.HistoricalCacheRoot)
+        ? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "UniversalEngine",
+            "historical-cache")
+        : options.HistoricalCacheRoot;
+
+static async Task SaveApplicationSettingsAsync(
+    string configPath,
+    ApplicationSettingsUpdateRequest request,
+    MarketDataProviderKind provider,
+    CancellationToken cancellationToken)
+{
+    JsonObject root;
+    if (File.Exists(configPath))
+    {
+        var content = await File.ReadAllTextAsync(configPath, cancellationToken);
+        root = JsonNode.Parse(string.IsNullOrWhiteSpace(content) ? "{}" : content)?.AsObject() ?? new JsonObject();
+    }
+    else
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+        root = new JsonObject();
+    }
+
+    root["Risk"] = new JsonObject
+    {
+        ["CapitalAmount"] = request.Risk.CapitalAmount,
+        ["MinPlannedRiskAmount"] = request.Risk.MinPlannedRiskAmount,
+        ["MaxPlannedRiskAmount"] = request.Risk.MaxPlannedRiskAmount,
+        ["MaxActiveSignals"] = request.Risk.MaxActiveSignals,
+        ["AllowSmallRiskAlerts"] = request.Risk.AllowSmallRiskAlerts
+    };
+
+    root["EodScanner"] = new JsonObject
+    {
+        ["LookbackDays"] = request.EodScanner.LookbackDays,
+        ["MinimumAverageTradedValue"] = request.EodScanner.MinimumAverageTradedValue,
+        ["MinimumVolumeExpansionRatio"] = request.EodScanner.MinimumVolumeExpansionRatio,
+        ["NearHighCloseThreshold"] = request.EodScanner.NearHighCloseThreshold,
+        ["NearLowCloseThreshold"] = request.EodScanner.NearLowCloseThreshold,
+        ["MaxDailyDataAgeHours"] = request.EodScanner.MaxDailyDataAgeHours,
+        ["MinimumAcceptedScore"] = request.EodScanner.MinimumAcceptedScore,
+        ["MaxAcceptedCandidates"] = request.EodScanner.MaxAcceptedCandidates,
+        ["FactorWeights"] = ToJsonObject(request.EodScanner.FactorWeights)
+    };
+
+    root["AnalysisData"] = new JsonObject
+    {
+        ["PrimaryProvider"] = provider.ToString(),
+        ["UseHistoricalCache"] = request.Analysis.UseHistoricalCache,
+        ["HistoricalCacheTtlHours"] = request.Analysis.HistoricalCacheTtlHours,
+        ["HistoricalCacheRoot"] = string.Empty
+    };
+
+    await File.WriteAllTextAsync(
+        configPath,
+        root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }),
+        cancellationToken);
+}
+
+static async Task SaveScannerInstrumentsAsync(
+    string configPath,
+    IReadOnlyList<InstrumentSettingsRequest> instruments,
+    CancellationToken cancellationToken)
+{
+    JsonObject root;
+    if (File.Exists(configPath))
+    {
+        var content = await File.ReadAllTextAsync(configPath, cancellationToken);
+        root = JsonNode.Parse(string.IsNullOrWhiteSpace(content) ? "{}" : content)?.AsObject() ?? new JsonObject();
+    }
+    else
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+        root = new JsonObject();
+    }
+
+    var scannerRun = root["ScannerRun"] as JsonObject ?? new JsonObject();
+    scannerRun["Instruments"] = new JsonArray(instruments
+        .OrderBy(instrument => instrument.Exchange)
+        .ThenBy(instrument => instrument.Symbol)
+        .Select(instrument => new JsonObject
+        {
+            ["Symbol"] = instrument.Symbol,
+            ["Exchange"] = instrument.Exchange,
+            ["Isin"] = instrument.Isin,
+            ["SecurityId"] = instrument.SecurityId
+        })
+        .Cast<JsonNode?>()
+        .ToArray());
+    root["ScannerRun"] = scannerRun;
+
+    await File.WriteAllTextAsync(
+        configPath,
+        root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }),
+        cancellationToken);
+}
+
+static JsonObject ToJsonObject(IReadOnlyDictionary<string, decimal> values)
+{
+    var node = new JsonObject();
+    foreach (var (key, value) in values.OrderBy(item => item.Key))
+    {
+        node[key] = value;
+    }
+
+    return node;
+}
+
 static Task SavePipelineEventAsync(
     IEventLogRepository repository,
     string stage,
@@ -831,10 +1063,45 @@ public sealed record PipelineStatusResponse(
 public sealed record DataSourceSettingsResponse(
     string AnalysisProvider,
     string BrokerProvider,
-    bool AnalysisFallbackToBroker,
-    bool YahooCacheEnabled,
-    int YahooCacheTtlMinutes,
+    bool HistoricalCacheEnabled,
+    int HistoricalCacheTtlHours,
+    string? HistoricalCacheRoot,
+    int HistoricalCacheEntryCount,
     string Message);
+
+public sealed record ApplicationSettingsResponse(
+    RiskSettingsResponse Risk,
+    EodScannerSettingsResponse EodScanner,
+    AnalysisSettingsResponse Analysis,
+    string Message);
+
+public sealed record ApplicationSettingsUpdateRequest(
+    RiskSettingsResponse Risk,
+    EodScannerSettingsResponse EodScanner,
+    AnalysisSettingsResponse Analysis);
+
+public sealed record RiskSettingsResponse(
+    decimal CapitalAmount,
+    decimal MinPlannedRiskAmount,
+    decimal MaxPlannedRiskAmount,
+    int MaxActiveSignals,
+    bool AllowSmallRiskAlerts);
+
+public sealed record EodScannerSettingsResponse(
+    int LookbackDays,
+    decimal MinimumAverageTradedValue,
+    decimal MinimumVolumeExpansionRatio,
+    decimal NearHighCloseThreshold,
+    decimal NearLowCloseThreshold,
+    int MaxDailyDataAgeHours,
+    decimal MinimumAcceptedScore,
+    int MaxAcceptedCandidates,
+    Dictionary<string, decimal> FactorWeights);
+
+public sealed record AnalysisSettingsResponse(
+    string PrimaryProvider,
+    bool UseHistoricalCache,
+    int HistoricalCacheTtlHours);
 
 public sealed record PipelineStageStatus(
     string Stage,
@@ -860,6 +1127,15 @@ public sealed record ScannerInstrumentsResponse(
     int Count,
     IReadOnlyList<string> DuplicateInstrumentKeys,
     IReadOnlyList<ScannerInstrumentResponse> Instruments);
+
+public sealed record ScannerInstrumentsUpdateRequest(
+    IReadOnlyList<InstrumentSettingsRequest> Instruments);
+
+public sealed record InstrumentSettingsRequest(
+    string Symbol,
+    string Exchange,
+    string? Isin,
+    string? SecurityId);
 
 public sealed record ScannerInstrumentResponse(
     string Symbol,

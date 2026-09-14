@@ -10,6 +10,12 @@ public sealed class BacktestOptions
 
     public int MaxHoldingDays { get; set; } = 1;
 
+    public bool UseStopTargetSimulation { get; set; } = true;
+
+    public decimal TargetRiskRewardRatio { get; set; } = 2m;
+
+    public bool AssumeStopBeforeTargetWhenBothTouched { get; set; } = true;
+
     public DateOnly? GetFromDate() =>
         string.IsNullOrWhiteSpace(FromDate) ? null : DateOnly.Parse(FromDate);
 

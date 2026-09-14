@@ -66,7 +66,7 @@ public sealed class BacktestReplayService(
             trades);
     }
 
-    private static BacktestTradeResult EvaluateCandidate(
+    private BacktestTradeResult EvaluateCandidate(
         CandidateDecision candidate,
         DateOnly signalDate,
         IReadOnlyList<DailyBar> replayBars)
@@ -77,8 +77,8 @@ public sealed class BacktestReplayService(
             .ToArray();
 
         var entryBar = bars.LastOrDefault(bar => bar.Date == signalDate);
-        var exitBar = bars.FirstOrDefault(bar => bar.Date > signalDate);
-        if (entryBar is null || exitBar is null || candidate.Direction is null)
+        var exitBars = bars.Where(bar => bar.Date > signalDate).Take(Math.Max(1, _options.MaxHoldingDays)).ToArray();
+        if (entryBar is null || exitBars.Length == 0 || candidate.Direction is null)
         {
             return new BacktestTradeResult(
                 candidate.Instrument,
@@ -92,9 +92,20 @@ public sealed class BacktestReplayService(
                 candidate.Score);
         }
 
+        if (_options.UseStopTargetSimulation)
+        {
+            var simulated = TryEvaluateStopTarget(candidate, entryBar, exitBars);
+            if (simulated is not null)
+            {
+                return simulated;
+            }
+        }
+
+        var exitBar = exitBars[^1];
+        var entryPrice = candidate.EntryPrice ?? entryBar.Close;
         var returnPercent = candidate.Direction == CandidateDirection.Long
-            ? (exitBar.Close - entryBar.Close) / entryBar.Close * 100m
-            : (entryBar.Close - exitBar.Close) / entryBar.Close * 100m;
+            ? (exitBar.Close - entryPrice) / entryPrice * 100m
+            : (entryPrice - exitBar.Close) / entryPrice * 100m;
 
         var outcome = returnPercent switch
         {
@@ -108,10 +119,85 @@ public sealed class BacktestReplayService(
             candidate.Direction.Value,
             signalDate,
             exitBar.Date,
-            entryBar.Close,
+            entryPrice,
             exitBar.Close,
             Math.Round(returnPercent, 4),
             outcome,
             candidate.Score);
+    }
+
+    private BacktestTradeResult? TryEvaluateStopTarget(
+        CandidateDecision candidate,
+        DailyBar entryBar,
+        IReadOnlyList<DailyBar> exitBars)
+    {
+        if (candidate.Direction is null)
+        {
+            return null;
+        }
+
+        var entryPrice = candidate.EntryPrice ?? entryBar.Close;
+        var (stopPrice, targetPrice) = GetStopTarget(candidate, entryBar, entryPrice);
+        if (entryPrice <= 0 || stopPrice <= 0 || targetPrice <= 0 || stopPrice == entryPrice)
+        {
+            return null;
+        }
+
+        foreach (var bar in exitBars)
+        {
+            var stopTouched = candidate.Direction == CandidateDirection.Long
+                ? bar.Low <= stopPrice
+                : bar.High >= stopPrice;
+            var targetTouched = candidate.Direction == CandidateDirection.Long
+                ? bar.High >= targetPrice
+                : bar.Low <= targetPrice;
+
+            if (!stopTouched && !targetTouched)
+            {
+                continue;
+            }
+
+            var exitPrice = stopTouched && targetTouched && _options.AssumeStopBeforeTargetWhenBothTouched
+                ? stopPrice
+                : targetTouched ? targetPrice : stopPrice;
+            var returnPercent = candidate.Direction == CandidateDirection.Long
+                ? (exitPrice - entryPrice) / entryPrice * 100m
+                : (entryPrice - exitPrice) / entryPrice * 100m;
+
+            return new BacktestTradeResult(
+                candidate.Instrument,
+                candidate.Direction.Value,
+                entryBar.Date,
+                bar.Date,
+                entryPrice,
+                exitPrice,
+                Math.Round(returnPercent, 4),
+                returnPercent > 0 ? BacktestTradeOutcome.Win : returnPercent < 0 ? BacktestTradeOutcome.Loss : BacktestTradeOutcome.Flat,
+                candidate.Score);
+        }
+
+        return null;
+    }
+
+    private (decimal StopPrice, decimal TargetPrice) GetStopTarget(
+        CandidateDecision candidate,
+        DailyBar entryBar,
+        decimal entryPrice)
+    {
+        if (candidate.StopPrice is not null && candidate.TargetPrice is not null)
+        {
+            return (candidate.StopPrice.Value, candidate.TargetPrice.Value);
+        }
+
+        if (candidate.Direction == CandidateDirection.Long)
+        {
+            var stop = candidate.StopPrice ?? entryBar.Low;
+            var risk = Math.Max(0m, entryPrice - stop);
+            return (stop, candidate.TargetPrice ?? entryPrice + (risk * _options.TargetRiskRewardRatio));
+        }
+
+        var shortStop = candidate.StopPrice ?? entryBar.High;
+        var shortRisk = Math.Max(0m, shortStop - entryPrice);
+        return (shortStop, candidate.TargetPrice ?? entryPrice - (shortRisk * _options.TargetRiskRewardRatio));
     }
 }

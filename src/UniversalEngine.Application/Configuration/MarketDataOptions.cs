@@ -54,6 +54,8 @@ public sealed class DhanMarketDataOptions
 
     public int RetryBaseDelayMs { get; set; } = 500;
 
+    public int RequestThrottleDelayMs { get; set; } = 500;
+
     public string GetAccessToken() =>
         !string.IsNullOrWhiteSpace(AccessToken)
             ? AccessToken

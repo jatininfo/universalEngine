@@ -12,6 +12,8 @@ public enum DecisionReasonCode
     InsufficientLiquidity = 103,
     InsufficientVolumeExpansion = 104,
     CloseLocationNotConfirmed = 105,
+    ScannerScoreBelowThreshold = 106,
+    ScannerShortlistLimitExceeded = 107,
     PreMarketAccepted = 150,
     PreMarketDataUnavailable = 151,
     PreMarketGapTooLarge = 152,

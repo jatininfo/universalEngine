@@ -16,13 +16,6 @@ public static class DependencyInjection
     {
         services.AddSingleton<ConfiguredMarketDataProvider>();
         services.AddSingleton<CsvMarketDataProvider>();
-        services.AddHttpClient<YahooFinanceMarketDataProvider>((serviceProvider, client) =>
-        {
-            var options = serviceProvider.GetRequiredService<IOptions<AnalysisDataOptions>>().Value;
-            client.BaseAddress = new Uri(options.Yahoo.BaseUrl);
-            client.Timeout = TimeSpan.FromSeconds(30);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("UniversalEngine/1.0");
-        });
         services.AddHttpClient<DhanMarketDataProvider>((serviceProvider, client) =>
         {
             var options = serviceProvider.GetRequiredService<IOptions<MarketDataOptions>>().Value;

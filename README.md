@@ -43,12 +43,9 @@ Notification-first NSE/BSE intraday opportunity scanner built in C#/.NET.
     "EnabledProviders": [ "Dhan", "Zerodha", "Groww" ]
   },
   "AnalysisData": {
-    "PrimaryProvider": "Yahoo",
-    "FallbackToBrokerProvider": false,
-    "Yahoo": {
-      "UseCache": true,
-      "CacheTtlMinutes": 1440
-    }
+    "PrimaryProvider": "Dhan",
+    "UseHistoricalCache": true,
+    "HistoricalCacheTtlHours": 24
   },
   "Risk": {
     "CapitalAmount": 20000,
@@ -59,7 +56,9 @@ Notification-first NSE/BSE intraday opportunity scanner built in C#/.NET.
 }
 ```
 
-`AnalysisData` is used for EOD analysis and backtesting so repeated scans do not burn broker market-data calls. `MarketData` remains the broker/final-validation source for Dhan-backed intraday checks, broker status, and future order-safe flows. Set `AnalysisData:PrimaryProvider` to `Yahoo`, `Csv`, or, only when intentionally needed, `Dhan` with `FallbackToBrokerProvider: true`.
+`AnalysisData` is used for EOD analysis and backtesting. Production defaults it to Dhan with a historical daily-bar cache, so repeated EOD/backtest runs can reuse cached historical data instead of repeatedly calling the broker. `MarketData` remains the broker/final-validation source for intraday checks, broker status, and future order-safe flows. Intraday opening-range, live-validation, and monitoring calls intentionally bypass the historical cache because they require fresh broker data.
+
+`MarketData:Dhan:RequestThrottleDelayMs` spaces Dhan market-data requests during cache fills and other broker-backed scans to reduce rate-limit failures. Historical daily-bar cache is only used for daily EOD/backtest analysis, never for realtime intraday validation.
 
 ## Build and Test
 
@@ -80,6 +79,7 @@ Endpoints:
 
 - `GET /health`
 - `GET /scanner/instruments`
+- `PUT /scanner/instruments`
 - `GET /settings/data-sources`
 - `GET /scanner/runs/latest?limit=10`
 - `GET /scanner/runs/{runId}/candidates`
@@ -114,13 +114,15 @@ Endpoints:
 
 The Dhan instrument search uses the published Dhan scrip master and returns `SecurityId` values for scanner config.
 
-## Dashboard UI
+## Application UI
 
-The dashboard is a separate React/Vite app under `web/universal-engine-dashboard`. It is intentionally decoupled from worker and application services; it only reads from `UniversalEngine.Api`.
+The application UI is a separate React/Vite app under `web/universal-engine-dashboard`. It is intentionally decoupled from worker and application services; it uses `UniversalEngine.Api` for pipeline actions, reports, broker status, and safe non-secret settings updates.
 
-Dashboard panels currently include:
+Application panels currently include:
 
 - API health and broker status
+- Editable non-secret application settings for risk, EOD scanner, and analysis cache policy
+- Editable scanner instrument universe
 - Latest EOD candidates
 - Active scanner instruments
 - Recent pipeline run status
@@ -131,6 +133,7 @@ Dashboard panels currently include:
 - Persisted backtest reports and latest replay trades
 - Backtest accuracy summary
 - Backtest direction calibration
+- Report drill-down and CSV exports for EOD candidates, stage decisions, backtest trades, paper orders, and audit trail
 - Paper trading runs and simulated orders
 - AI analysis runs and validated structured decisions
 - Event log for completed manual pipeline stages
@@ -143,7 +146,7 @@ Run the API:
 dotnet run --project src/UniversalEngine.Api/UniversalEngine.Api.csproj
 ```
 
-Run the dashboard:
+Run the application UI:
 
 ```powershell
 cd web/universal-engine-dashboard
@@ -151,7 +154,7 @@ npm install
 npm run dev
 ```
 
-Default dashboard API URL is `https://localhost:7071`. Override with `VITE_UNIVERSAL_ENGINE_API_URL` when needed.
+Default application API URL is `https://localhost:7071`. Override with `VITE_UNIVERSAL_ENGINE_API_URL` when needed.
 
 CLI lookup without starting the API:
 

@@ -15,7 +15,6 @@ using UniversalEngine.Infrastructure;
 var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.AddFilter("System.Net.Http.HttpClient.TelegramNotificationSender", LogLevel.None);
 builder.Logging.AddFilter("System.Net.Http.HttpClient.DhanMarketDataProvider", LogLevel.Warning);
-builder.Logging.AddFilter("System.Net.Http.HttpClient.YahooFinanceMarketDataProvider", LogLevel.Warning);
 builder.Logging.AddFilter("System.Net.Http.HttpClient.BrokerConnectionVerifier", LogLevel.Warning);
 builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true);
 if (args.Contains("--lookup-symbol") ||
