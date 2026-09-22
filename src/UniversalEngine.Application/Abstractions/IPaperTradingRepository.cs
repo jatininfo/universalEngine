@@ -16,4 +16,18 @@ public interface IPaperTradingRepository
     Task<IReadOnlyList<PaperOrderSummary>> GetPaperOrdersAsync(
         string runId,
         CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<PaperOrderSummary>> GetOpenPaperOrdersAsync(
+        DateOnly sessionDate,
+        CancellationToken cancellationToken);
+
+    Task UpdatePaperOrderAsync(
+        long orderId,
+        PaperOrderStatus status,
+        DateOnly? exitDate,
+        decimal? exitPrice,
+        decimal? returnPercent,
+        decimal? realizedPnl,
+        string sourceReason,
+        CancellationToken cancellationToken);
 }

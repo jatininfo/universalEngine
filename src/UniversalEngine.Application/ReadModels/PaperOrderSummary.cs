@@ -16,4 +16,8 @@ public sealed record PaperOrderSummary(
     string Status,
     string SourceStage,
     string SourceReason,
+    DateOnly? ExitDate,
+    decimal? ExitPrice,
+    decimal? ReturnPercent,
+    decimal? RealizedPnl,
     DateTimeOffset CreatedAtUtc);

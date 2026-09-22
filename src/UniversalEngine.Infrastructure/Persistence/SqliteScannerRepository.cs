@@ -20,6 +20,7 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
     IPaperTradingRepository,
     IAiAnalysisRepository,
     IEventLogRepository,
+    IOutcomeFeedbackRepository,
     INotificationHistoryRepository
 {
     private readonly string _connectionString = options.Value.ConnectionString;
@@ -836,7 +837,8 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
             connection,
             """
             SELECT Id, RunId, SessionDate, Symbol, Exchange, Direction, EntryPrice, StopPrice, TargetPrice,
-                   Quantity, NotionalAmount, PlannedRiskAmount, Status, SourceStage, SourceReason, CreatedAtUtc
+                   Quantity, NotionalAmount, PlannedRiskAmount, Status, SourceStage, SourceReason,
+                   ExitDate, ExitPrice, ReturnPercent, RealizedPnl, CreatedAtUtc
             FROM PaperOrders
             WHERE RunId = $runId
             ORDER BY CreatedAtUtc DESC, Symbol ASC;
@@ -863,10 +865,105 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
                 reader.GetString(12),
                 reader.GetString(13),
                 reader.GetString(14),
-                DateTimeOffset.Parse(reader.GetString(15))));
+                GetDateOnly(reader, 15),
+                GetDecimal(reader, 16),
+                GetDecimal(reader, 17),
+                GetDecimal(reader, 18),
+                DateTimeOffset.Parse(reader.GetString(19))));
         }
 
         return orders;
+    }
+
+    public async Task<IReadOnlyList<PaperOrderSummary>> GetOpenPaperOrdersAsync(
+        DateOnly sessionDate,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = CreateCommand(
+            connection,
+            """
+            SELECT Id, RunId, SessionDate, Symbol, Exchange, Direction, EntryPrice, StopPrice, TargetPrice,
+                   Quantity, NotionalAmount, PlannedRiskAmount, Status, SourceStage, SourceReason,
+                   ExitDate, ExitPrice, ReturnPercent, RealizedPnl, CreatedAtUtc
+            FROM PaperOrders
+            WHERE SessionDate = $sessionDate AND Status = 'Open'
+            ORDER BY CreatedAtUtc ASC, Symbol ASC;
+            """,
+            ("$sessionDate", DateText(sessionDate)));
+
+        var orders = new List<PaperOrderSummary>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            orders.Add(new PaperOrderSummary(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                DateOnly.Parse(reader.GetString(2)),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetString(5),
+                reader.GetDecimal(6),
+                reader.GetDecimal(7),
+                GetDecimal(reader, 8),
+                reader.GetInt32(9),
+                reader.GetDecimal(10),
+                reader.GetDecimal(11),
+                reader.GetString(12),
+                reader.GetString(13),
+                reader.GetString(14),
+                GetDateOnly(reader, 15),
+                GetDecimal(reader, 16),
+                GetDecimal(reader, 17),
+                GetDecimal(reader, 18),
+                DateTimeOffset.Parse(reader.GetString(19))));
+        }
+
+        return orders;
+    }
+
+    public async Task UpdatePaperOrderAsync(
+        long orderId,
+        PaperOrderStatus status,
+        DateOnly? exitDate,
+        decimal? exitPrice,
+        decimal? returnPercent,
+        decimal? realizedPnl,
+        string sourceReason,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await ExecuteAsync(
+            connection,
+            """
+            UPDATE PaperOrders
+            SET Status = $status,
+                ExitDate = $exitDate,
+                ExitPrice = $exitPrice,
+                ReturnPercent = $returnPercent,
+                RealizedPnl = $realizedPnl,
+                SourceReason = $sourceReason
+            WHERE Id = $id;
+            """,
+            cancellationToken,
+            ("$id", orderId),
+            ("$status", status.ToString()),
+            ("$exitDate", exitDate is null ? null : DateText(exitDate.Value)),
+            ("$exitPrice", Db(exitPrice)),
+            ("$returnPercent", Db(returnPercent)),
+            ("$realizedPnl", Db(realizedPnl)),
+            ("$sourceReason", sourceReason));
+
+        await ExecuteAsync(
+            connection,
+            """
+            UPDATE PaperTradingRuns
+            SET OpenCount = (SELECT COUNT(*) FROM PaperOrders WHERE RunId = PaperTradingRuns.Id AND Status = 'Open'),
+                ClosedCount = (SELECT COUNT(*) FROM PaperOrders WHERE RunId = PaperTradingRuns.Id AND Status <> 'Open')
+            WHERE Id = (SELECT RunId FROM PaperOrders WHERE Id = $id);
+            """,
+            cancellationToken,
+            ("$id", orderId));
     }
 
     public async Task SaveEventAsync(
@@ -919,6 +1016,77 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
         }
 
         return events;
+    }
+
+    public async Task SaveOutcomeFeedbackAsync(
+        DateOnly sessionDate,
+        string symbol,
+        string exchange,
+        string direction,
+        string source,
+        string recommendation,
+        string outcome,
+        decimal? returnPercent,
+        string notes,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO OutcomeFeedback
+                (SessionDate, Symbol, Exchange, Direction, Source, Recommendation, Outcome, ReturnPercent, Notes, CreatedAtUtc)
+            VALUES
+                ($sessionDate, $symbol, $exchange, $direction, $source, $recommendation, $outcome, $returnPercent, $notes, $createdAtUtc);
+            """,
+            cancellationToken,
+            ("$sessionDate", DateText(sessionDate)),
+            ("$symbol", symbol.ToUpperInvariant()),
+            ("$exchange", exchange),
+            ("$direction", direction),
+            ("$source", source),
+            ("$recommendation", recommendation),
+            ("$outcome", outcome),
+            ("$returnPercent", Db(returnPercent)),
+            ("$notes", notes),
+            ("$createdAtUtc", NowText()));
+    }
+
+    public async Task<IReadOnlyList<OutcomeFeedbackSummary>> GetLatestOutcomeFeedbackAsync(
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = CreateCommand(
+            connection,
+            """
+            SELECT Id, SessionDate, Symbol, Exchange, Direction, Source, Recommendation, Outcome,
+                   ReturnPercent, Notes, CreatedAtUtc
+            FROM OutcomeFeedback
+            ORDER BY CreatedAtUtc DESC
+            LIMIT $limit;
+            """,
+            ("$limit", Limit(limit)));
+
+        var rows = new List<OutcomeFeedbackSummary>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new OutcomeFeedbackSummary(
+                reader.GetInt64(0),
+                DateOnly.Parse(reader.GetString(1)),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetString(5),
+                reader.GetString(6),
+                reader.GetString(7),
+                GetDecimal(reader, 8),
+                reader.GetString(9),
+                DateTimeOffset.Parse(reader.GetString(10))));
+        }
+
+        return rows;
     }
 
     public async Task SaveAiAnalysisRunAsync(
@@ -1258,6 +1426,10 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
                 Status TEXT NOT NULL,
                 SourceStage TEXT NOT NULL,
                 SourceReason TEXT NOT NULL,
+                ExitDate TEXT NULL,
+                ExitPrice REAL NULL,
+                ReturnPercent REAL NULL,
+                RealizedPnl REAL NULL,
                 CreatedAtUtc TEXT NOT NULL,
                 FOREIGN KEY (RunId) REFERENCES PaperTradingRuns(Id)
             );
@@ -1267,6 +1439,20 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
                 EventType TEXT NOT NULL,
                 Subject TEXT NOT NULL,
                 PayloadJson TEXT NOT NULL,
+                CreatedAtUtc TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS OutcomeFeedback (
+                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                SessionDate TEXT NOT NULL,
+                Symbol TEXT NOT NULL,
+                Exchange TEXT NOT NULL,
+                Direction TEXT NOT NULL,
+                Source TEXT NOT NULL,
+                Recommendation TEXT NOT NULL,
+                Outcome TEXT NOT NULL,
+                ReturnPercent REAL NULL,
+                Notes TEXT NOT NULL,
                 CreatedAtUtc TEXT NOT NULL
             );
 
@@ -1299,6 +1485,30 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
             """;
 
         await ExecuteAsync(connection, sql, cancellationToken);
+        await AddNullableColumnIfMissingAsync(connection, "PaperOrders", "ExitDate", "TEXT NULL", cancellationToken);
+        await AddNullableColumnIfMissingAsync(connection, "PaperOrders", "ExitPrice", "REAL NULL", cancellationToken);
+        await AddNullableColumnIfMissingAsync(connection, "PaperOrders", "ReturnPercent", "REAL NULL", cancellationToken);
+        await AddNullableColumnIfMissingAsync(connection, "PaperOrders", "RealizedPnl", "REAL NULL", cancellationToken);
+    }
+
+    private static async Task AddNullableColumnIfMissingAsync(
+        SqliteConnection connection,
+        string tableName,
+        string columnName,
+        string definition,
+        CancellationToken cancellationToken)
+    {
+        await using var info = CreateCommand(connection, $"PRAGMA table_info({tableName});");
+        await using var reader = await info.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (string.Equals(reader.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+        }
+
+        await ExecuteAsync(connection, $"ALTER TABLE {tableName} ADD COLUMN {columnName} {definition};", cancellationToken);
     }
 
     private async Task<IReadOnlyList<CandidateDecision>> GetLatestTradeCandidatesFromAsync(
@@ -1327,7 +1537,7 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
             ? "Symbol, Exchange, Direction, Score, ReasonsJson, EntryPrice, StopPrice, TargetPrice"
             : "Symbol, Exchange, Direction, Score, ReasonsJson, NULL, NULL, NULL";
         var pricePredicate = requirePrices
-            ? "AND EntryPrice IS NOT NULL AND StopPrice IS NOT NULL AND Quantity IS NOT NULL"
+            ? "AND EntryPrice IS NOT NULL AND StopPrice IS NOT NULL"
             : string.Empty;
 
         await using var command = CreateCommand(
@@ -1613,6 +1823,9 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
 
     private static decimal? GetDecimal(SqliteDataReader reader, int ordinal) =>
         reader.IsDBNull(ordinal) ? null : reader.GetDecimal(ordinal);
+
+    private static DateOnly? GetDateOnly(SqliteDataReader reader, int ordinal) =>
+        reader.IsDBNull(ordinal) ? null : DateOnly.Parse(reader.GetString(ordinal));
 
     private static int? GetInt(SqliteDataReader reader, int ordinal) =>
         reader.IsDBNull(ordinal) ? null : reader.GetInt32(ordinal);

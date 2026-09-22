@@ -141,6 +141,16 @@ type BacktestCalibrationSummary = {
   averageReturnPercent: number;
 };
 
+type FeedbackCalibrationSummary = {
+  bucket: string;
+  signals: number;
+  wins: number;
+  losses: number;
+  flats: number;
+  winRatePercent: number;
+  averageReturnPercent: number;
+};
+
 type PaperTradingRun = {
   id: string;
   sessionDate: string;
@@ -164,6 +174,10 @@ type PaperOrder = {
   status: string;
   sourceStage: string;
   sourceReason: string;
+  exitDate?: string;
+  exitPrice?: number;
+  returnPercent?: number;
+  realizedPnl?: number;
 };
 
 type AiAnalysisRun = {
@@ -202,6 +216,7 @@ type LookupResult = {
   exchange: string;
   securityId: string;
   displayName: string;
+  symbolName?: string;
   isin?: string;
 };
 
@@ -216,6 +231,22 @@ type ScannerInstrument = {
 type ScannerInstruments = {
   count: number;
   duplicateInstrumentKeys: string[];
+  baskets: ScannerBasket[];
+  instruments: ScannerInstrument[];
+};
+
+type ScannerBasket = {
+  name: string;
+  enabled: boolean;
+  maxSymbols: number;
+  instrumentCount: number;
+  instruments: ScannerInstrument[];
+};
+
+type ScannerBasketDraft = {
+  name: string;
+  enabled: boolean;
+  maxSymbols: number;
   instruments: ScannerInstrument[];
 };
 
@@ -280,6 +311,19 @@ type ApplicationSettings = {
   message: string;
 };
 
+type OutcomeFeedback = {
+  sessionDate: string;
+  symbol: string;
+  exchange: string;
+  direction: string;
+  source: string;
+  recommendation: string;
+  outcome: string;
+  returnPercent?: number;
+  notes: string;
+  createdAtUtc: string;
+};
+
 type DashboardState = {
   health: string;
   scannerRuns: RunSummary[];
@@ -296,10 +340,12 @@ type DashboardState = {
   backtestTrades: BacktestTrade[];
   backtestAccuracy: BacktestAccuracySummary | null;
   backtestCalibration: BacktestCalibrationSummary[];
+  feedbackCalibration: FeedbackCalibrationSummary[];
   paperRuns: PaperTradingRun[];
   paperOrders: PaperOrder[];
   aiRuns: AiAnalysisRun[];
   aiDecisions: AiAnalysisDecision[];
+  outcomeFeedback: OutcomeFeedback[];
   events: EventLogEntry[];
   notifications: NotificationAttempt[];
   brokerStatuses: BrokerStatus[];
@@ -328,10 +374,12 @@ const initialState: DashboardState = {
   backtestTrades: [],
   backtestAccuracy: null,
   backtestCalibration: [],
+  feedbackCalibration: [],
   paperRuns: [],
   paperOrders: [],
   aiRuns: [],
   aiDecisions: [],
+  outcomeFeedback: [],
   events: [],
   notifications: [],
   brokerStatuses: [],
@@ -352,8 +400,20 @@ function App() {
   const [settingsMessage, setSettingsMessage] = React.useState<string | null>(null);
   const [instrumentDraft, setInstrumentDraft] = React.useState<ScannerInstrument[]>([]);
   const [instrumentMessage, setInstrumentMessage] = React.useState<string | null>(null);
+  const [basketDraft, setBasketDraft] = React.useState<ScannerBasketDraft[]>([]);
+  const [basketMessage, setBasketMessage] = React.useState<string | null>(null);
   const [symbol, setSymbol] = React.useState("RELIANCE");
   const [runDate, setRunDate] = React.useState(() => new Date().toISOString().slice(0, 10));
+  const [backtestFromDate, setBacktestFromDate] = React.useState(() => {
+    const date = new Date();
+    date.setDate(date.getDate() - 7);
+    return date.toISOString().slice(0, 10);
+  });
+  const [backtestToDate, setBacktestToDate] = React.useState(() => {
+    const date = new Date();
+    date.setDate(date.getDate() - 1);
+    return date.toISOString().slice(0, 10);
+  });
   const [fromTime, setFromTime] = React.useState("09:30");
   const [toTime, setToTime] = React.useState("10:00");
   const [runningStage, setRunningStage] = React.useState<string | null>(null);
@@ -373,6 +433,7 @@ function App() {
         backtestRuns,
         backtestAccuracy,
         backtestCalibration,
+        feedbackCalibration,
         paperRuns,
         aiRuns,
         brokerStatuses,
@@ -380,6 +441,7 @@ function App() {
         applicationSettings,
         pipelineStatus,
         scannerInstruments,
+        outcomeFeedback,
         events,
         notifications
       ] = await Promise.all([
@@ -392,6 +454,7 @@ function App() {
         getJson<BacktestRun[]>("/backtests/runs/latest?limit=5"),
         getJson<BacktestAccuracySummary>("/accuracy/backtests/summary?limit=100"),
         getJson<BacktestCalibrationSummary[]>("/accuracy/backtests/by-direction?limit=100"),
+        getJson<FeedbackCalibrationSummary[]>("/accuracy/feedback/by-recommendation?limit=500"),
         getJson<PaperTradingRun[]>("/paper-trading/runs/latest?limit=5"),
         getJson<AiAnalysisRun[]>("/ai/runs/latest?limit=5"),
         getJson<BrokerStatus[]>("/broker/status"),
@@ -399,6 +462,7 @@ function App() {
         getJson<ApplicationSettings>("/settings/application"),
         getJson<PipelineStatus>(`/pipeline/status?sessionDate=${runDate}`),
         getJson<ScannerInstruments>("/scanner/instruments"),
+        getJson<OutcomeFeedback[]>("/feedback/outcomes/latest?limit=10"),
         getJson<EventLogEntry[]>("/events/latest?limit=10"),
         getJson<NotificationAttempt[]>("/notifications/attempts/latest?limit=8")
       ]);
@@ -438,10 +502,12 @@ function App() {
         backtestTrades,
         backtestAccuracy,
         backtestCalibration,
+        feedbackCalibration,
         paperRuns,
         paperOrders,
         aiRuns,
         aiDecisions,
+        outcomeFeedback,
         events,
         notifications,
         brokerStatuses,
@@ -456,6 +522,12 @@ function App() {
       setLastRefresh(new Date());
       setSettingsDraft(applicationSettings);
       setInstrumentDraft(scannerInstruments.instruments);
+      setBasketDraft(scannerInstruments.baskets.map((basket) => ({
+        name: basket.name,
+        enabled: basket.enabled,
+        maxSymbols: basket.maxSymbols,
+        instruments: basket.instruments
+      })));
     } catch (error) {
       setState((current) => ({
         ...current,
@@ -500,6 +572,25 @@ function App() {
       setState((current) => ({
         ...current,
         error: error instanceof Error ? error.message : `${stage} run failed`
+      }));
+    } finally {
+      setRunningStage(null);
+    }
+  }
+
+  async function runBacktest() {
+    setRunningStage("Backtest");
+    setRunResult(null);
+    setState((current) => ({ ...current, error: null }));
+
+    try {
+      const result = await postJson<PipelineRunResult>(`/backtests/run?fromDate=${backtestFromDate}&toDate=${backtestToDate}`);
+      setRunResult(result);
+      await loadDashboard();
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        error: error instanceof Error ? error.message : "Backtest run failed"
       }));
     } finally {
       setRunningStage(null);
@@ -565,6 +656,16 @@ function App() {
       await loadDashboard();
     } catch (error) {
       setInstrumentMessage(error instanceof Error ? error.message : "Scanner instruments save failed");
+    }
+  }
+
+  async function saveScannerBaskets() {
+    try {
+      const response = await putJson<{ message: string; count: number }>("/scanner/baskets", { baskets: basketDraft });
+      setBasketMessage(`${response.message} Saved ${response.count} basket instruments.`);
+      await loadDashboard();
+    } catch (error) {
+      setBasketMessage(error instanceof Error ? error.message : "Scanner basket save failed");
     }
   }
 
@@ -703,6 +804,7 @@ function App() {
                 <button type="button" disabled={runningStage !== null} onClick={() => void runPipelineStage("Monitor", `/pipeline/monitor/run?from=${fromTime}&to=${toTime}`)}>Run Monitor</button>
                 <button type="button" disabled={runningStage !== null} onClick={() => void runPipelineStage("AI analysis", "/ai/run")}>Run AI</button>
                 <button type="button" disabled={runningStage !== null} onClick={() => void runPipelineStage("Paper trading", "/paper-trading/run")}>Run Paper</button>
+                <button type="button" disabled={runningStage !== null} onClick={() => void runPipelineStage("Paper mark-to-market", "/paper-trading/mark-to-market")}>Mark Paper</button>
               </div>
               <PipelineReadiness status={state.pipelineStatus} />
               <DataSourceReadiness settings={state.dataSourceSettings} />
@@ -748,6 +850,15 @@ function App() {
               message={instrumentMessage}
               onChange={setInstrumentDraft}
               onSave={() => void saveScannerInstruments()}
+            />
+          </Panel>
+          <Panel title="Scanner Baskets" action={state.scannerInstruments ? `${state.scannerInstruments.baskets.filter((basket) => basket.enabled).length}/${state.scannerInstruments.baskets.length} enabled` : "Loading"}>
+            <BasketEditor
+              baskets={state.scannerInstruments?.baskets ?? []}
+              draft={basketDraft}
+              message={basketMessage}
+              onChange={setBasketDraft}
+              onSave={() => void saveScannerBaskets()}
             />
           </Panel>
         </section>
@@ -816,6 +927,17 @@ function App() {
 
         <section className="split" id="backtesting">
           <Panel title="Backtest Accuracy">
+            <div className="backtest-runner">
+              <label>
+                From
+                <input type="date" value={backtestFromDate} onChange={(event) => setBacktestFromDate(event.target.value)} />
+              </label>
+              <label>
+                To
+                <input type="date" value={backtestToDate} onChange={(event) => setBacktestToDate(event.target.value)} />
+              </label>
+              <button type="button" disabled={runningStage !== null} onClick={() => void runBacktest()}>Run Backtest</button>
+            </div>
             {state.backtestAccuracy ? (
               <DataTable
                 columns={["Runs", "Signals", "Win rate", "Avg return", "W/L/F/No exit"]}
@@ -845,6 +967,22 @@ function App() {
                 `${item.wins}/${item.losses}/${item.flats}/${item.noExitData}`
               ])}
               emptyText="No direction calibration data yet."
+            />
+          </Panel>
+        </section>
+
+        <section id="feedback-calibration">
+          <Panel title="Feedback Calibration">
+            <DataTable
+              columns={["Source / Recommendation", "Signals", "Win rate", "Avg return", "W/L/F"]}
+              rows={state.feedbackCalibration.map((item) => [
+                item.bucket,
+                item.signals.toString(),
+                `${formatNumber(item.winRatePercent)}%`,
+                `${formatNumber(item.averageReturnPercent)}%`,
+                `${item.wins}/${item.losses}/${item.flats}`
+              ])}
+              emptyText="No outcome feedback calibration yet."
             />
           </Panel>
         </section>
@@ -942,16 +1080,16 @@ function App() {
 
           <Panel title="Latest Paper Orders">
             <DataTable
-              columns={["Symbol", "Direction", "Status", "Entry", "Stop", "Target", "Qty", "Risk", "Source"]}
+              columns={["Symbol", "Direction", "Status", "Entry", "Exit", "Return", "P&L", "Qty", "Source"]}
               rows={state.paperOrders.map((item) => [
                 `${item.exchange}:${item.symbol}`,
                 item.direction,
                 item.status,
                 formatNumber(item.entryPrice),
-                formatNumber(item.stopPrice),
-                formatOptionalNumber(item.targetPrice),
+                formatOptionalNumber(item.exitPrice),
+                typeof item.returnPercent === "number" ? `${formatNumber(item.returnPercent)}%` : "-",
+                formatOptionalNumber(item.realizedPnl),
                 item.quantity.toString(),
-                formatNumber(item.plannedRiskAmount),
                 item.sourceStage
               ])}
               emptyText="No paper orders found for latest run."
@@ -993,6 +1131,22 @@ function App() {
         </section>
 
         <section className="split" id="events">
+          <Panel title="Outcome Feedback">
+            <DataTable
+              columns={["Time", "Symbol", "Source", "Recommendation", "Outcome", "Return", "Notes"]}
+              rows={state.outcomeFeedback.map((item) => [
+                new Date(item.createdAtUtc).toLocaleString(),
+                `${item.exchange}:${item.symbol} ${item.direction}`,
+                item.source,
+                item.recommendation,
+                item.outcome,
+                typeof item.returnPercent === "number" ? `${formatNumber(item.returnPercent)}%` : "-",
+                item.notes || "-"
+              ])}
+              emptyText="No outcome feedback recorded yet."
+            />
+          </Panel>
+
           <Panel title="Event Log">
             <DataTable
               columns={["Time", "Type", "Subject", "Payload"]}
@@ -1575,7 +1729,14 @@ function InstrumentEditor({
           <tbody>
             {instruments.map((instrument, index) => (
               <tr key={`${instrument.exchange}:${instrument.symbol}:${index}`}>
-                <td><input value={instrument.symbol} onChange={(event) => updateInstrument(index, { symbol: event.target.value.toUpperCase() })} /></td>
+                <td>
+                  <InstrumentLookupInput
+                    value={instrument.symbol}
+                    exchange={instrument.exchange}
+                    onValueChange={(value) => updateInstrument(index, { symbol: value.toUpperCase() })}
+                    onSelect={(result) => updateInstrument(index, lookupResultToInstrument(result))}
+                  />
+                </td>
                 <td>
                   <select value={instrument.exchange} onChange={(event) => updateInstrument(index, { exchange: event.target.value })}>
                     <option value="Nse">NSE</option>
@@ -1592,6 +1753,280 @@ function InstrumentEditor({
       </div>
     </div>
   );
+}
+
+function InstrumentLookupInput({
+  value,
+  exchange,
+  placeholder = "Search stock",
+  clearAfterSelect = false,
+  onValueChange,
+  onSelect
+}: {
+  value: string;
+  exchange: string;
+  placeholder?: string;
+  clearAfterSelect?: boolean;
+  onValueChange: (value: string) => void;
+  onSelect: (result: LookupResult) => void;
+}) {
+  const [query, setQuery] = React.useState(value);
+  const [suggestions, setSuggestions] = React.useState<LookupResult[]>([]);
+  const [isLoading, setLoading] = React.useState(false);
+  const [hasUserEdited, setUserEdited] = React.useState(false);
+
+  React.useEffect(() => {
+    setQuery(value);
+    setUserEdited(false);
+  }, [value]);
+
+  React.useEffect(() => {
+    const text = query.trim();
+    if (!hasUserEdited || text.length < 3) {
+      setSuggestions([]);
+      return;
+    }
+
+    let isCancelled = false;
+    const handle = window.setTimeout(async () => {
+      setLoading(true);
+      try {
+        const results = await getJson<LookupResult[]>(`/instruments/dhan/search?symbol=${encodeURIComponent(text)}&exchange=${normalizeExchangeForLookup(exchange)}`);
+        if (!isCancelled) {
+          setSuggestions(results.slice(0, 8));
+        }
+      } catch {
+        if (!isCancelled) {
+          setSuggestions([]);
+        }
+      } finally {
+        if (!isCancelled) {
+          setLoading(false);
+        }
+      }
+    }, 350);
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [query, exchange, hasUserEdited]);
+
+  return (
+    <div className="instrument-lookup">
+      <input
+        value={query}
+        placeholder={placeholder}
+        onChange={(event) => {
+          const next = event.target.value.toUpperCase();
+          setUserEdited(true);
+          setQuery(next);
+          onValueChange(next);
+        }}
+      />
+      {(isLoading || suggestions.length > 0) && (
+        <div className="lookup-suggestions">
+          {isLoading && <span>Searching...</span>}
+          {suggestions.map((result) => (
+            <button
+              key={`${result.exchange}:${result.securityId}:${result.symbol}`}
+              type="button"
+              onClick={() => {
+                setQuery(clearAfterSelect ? "" : result.symbol);
+                setUserEdited(false);
+                setSuggestions([]);
+                onSelect(result);
+              }}
+            >
+              <strong>{result.symbol}</strong>
+              <small>{result.exchange} · {result.securityId} · {result.displayName || result.symbolName || "Equity"}</small>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BasketEditor({
+  baskets,
+  draft,
+  message,
+  onChange,
+  onSave
+}: {
+  baskets: ScannerBasket[];
+  draft: ScannerBasketDraft[];
+  message?: string | null;
+  onChange: (value: ScannerBasketDraft[]) => void;
+  onSave: () => void;
+}) {
+  const [jsonDraft, setJsonDraft] = React.useState("");
+  const [jsonError, setJsonError] = React.useState<string | null>(null);
+  const replaceBaskets = (next: ScannerBasketDraft[]) => onChange(next);
+  const updateBasket = (index: number, patch: Partial<ScannerBasketDraft>) =>
+    replaceBaskets(draft.map((basket, currentIndex) => currentIndex === index ? { ...basket, ...patch } : basket));
+  const updateBasketInstrument = (basketIndex: number, instrumentIndex: number, patch: Partial<ScannerInstrument>) =>
+    updateBasket(basketIndex, {
+      instruments: draft[basketIndex].instruments.map((instrument, currentIndex) =>
+        currentIndex === instrumentIndex ? { ...instrument, ...patch } : instrument)
+    });
+  const addBasketInstrument = (basketIndex: number, result: LookupResult) =>
+    updateBasket(basketIndex, {
+      instruments: [...draft[basketIndex].instruments, lookupResultToInstrument(result)]
+    });
+  const addBlankBasketInstrument = (basketIndex: number) =>
+    updateBasket(basketIndex, {
+      instruments: [...draft[basketIndex].instruments, { symbol: "", exchange: "Nse", isin: "", securityId: "", key: "" }]
+    });
+  const addBasket = () =>
+    replaceBaskets([...draft, { name: `Basket ${draft.length + 1}`, enabled: true, maxSymbols: 200, instruments: [] }]);
+  const importJson = () => {
+    try {
+      const parsed = JSON.parse(jsonDraft) as ScannerBasketDraft[];
+      if (!Array.isArray(parsed)) {
+        setJsonError("Basket JSON must be an array.");
+        return;
+      }
+
+      replaceBaskets(parsed.map((basket) => ({
+        name: basket.name || "Custom",
+        enabled: basket.enabled ?? true,
+        maxSymbols: basket.maxSymbols || 200,
+        instruments: Array.isArray(basket.instruments) ? basket.instruments : []
+      })));
+      setJsonError(null);
+    } catch (error) {
+      setJsonError(error instanceof Error ? error.message : "Invalid basket JSON.");
+    }
+  };
+
+  return (
+    <div className="instrument-editor">
+      {message && <p className="settings-message">{message}</p>}
+      <div className="instrument-toolbar primary-toolbar">
+        <button type="button" onClick={addBasket}>Create basket</button>
+        <button type="button" onClick={() => replaceBaskets([{
+          name: "Nifty200",
+          enabled: true,
+          maxSymbols: 200,
+          instruments: [{ symbol: "RELIANCE", exchange: "Nse", isin: "INE002A01018", securityId: "2885", key: "NSE:RELIANCE" }]
+        }])}>Use template</button>
+        <button type="button" onClick={onSave}>Save baskets</button>
+      </div>
+      <DataTable
+        columns={["Basket", "Enabled", "Max symbols", "Configured"]}
+        rows={baskets.map((basket) => [
+          basket.name,
+          basket.enabled ? "Yes" : "No",
+          basket.maxSymbols.toString(),
+          basket.instrumentCount.toString()
+        ])}
+        emptyText="No scanner baskets are saved yet."
+      />
+      <div className="basket-builder">
+        {draft.length === 0 && (
+          <div className="empty-editor">
+            <strong>No baskets in draft</strong>
+            <span>Create a basket, add stocks with lookup, then save.</span>
+            <button type="button" onClick={addBasket}>Create first basket</button>
+          </div>
+        )}
+        {draft.map((basket, basketIndex) => (
+          <article className="basket-card" key={`${basket.name}:${basketIndex}`}>
+            <header>
+              <input value={basket.name} onChange={(event) => updateBasket(basketIndex, { name: event.target.value })} />
+              <label className="toggle-row">
+                <input type="checkbox" checked={basket.enabled} onChange={(event) => updateBasket(basketIndex, { enabled: event.target.checked })} />
+                Enabled
+              </label>
+              <NumberField label="Max symbols" value={basket.maxSymbols} onChange={(value) => updateBasket(basketIndex, { maxSymbols: Math.round(value) })} />
+              <button type="button" className="text-danger" onClick={() => replaceBaskets(draft.filter((_, currentIndex) => currentIndex !== basketIndex))}>Remove basket</button>
+            </header>
+            <div className="basket-add-row">
+              <InstrumentLookupInput
+                value=""
+                exchange="Nse"
+                placeholder="Search stock to add"
+                clearAfterSelect
+                onValueChange={() => undefined}
+                onSelect={(result) => addBasketInstrument(basketIndex, result)}
+              />
+              <button type="button" onClick={() => addBlankBasketInstrument(basketIndex)}>Add blank row</button>
+            </div>
+            <div className="table-scroll">
+              <table className="editable-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Exchange</th>
+                    <th>Security ID</th>
+                    <th>ISIN</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {basket.instruments.map((instrument, instrumentIndex) => (
+                    <tr key={`${basket.name}:${instrument.exchange}:${instrument.symbol}:${instrumentIndex}`}>
+                      <td>
+                        <InstrumentLookupInput
+                          value={instrument.symbol}
+                          exchange={instrument.exchange}
+                          onValueChange={(value) => updateBasketInstrument(basketIndex, instrumentIndex, { symbol: value.toUpperCase() })}
+                          onSelect={(result) => updateBasketInstrument(basketIndex, instrumentIndex, lookupResultToInstrument(result))}
+                        />
+                      </td>
+                      <td>
+                        <select value={instrument.exchange} onChange={(event) => updateBasketInstrument(basketIndex, instrumentIndex, { exchange: event.target.value })}>
+                          <option value="Nse">NSE</option>
+                          <option value="Bse">BSE</option>
+                        </select>
+                      </td>
+                      <td><input value={instrument.securityId ?? ""} onChange={(event) => updateBasketInstrument(basketIndex, instrumentIndex, { securityId: event.target.value })} /></td>
+                      <td><input value={instrument.isin ?? ""} onChange={(event) => updateBasketInstrument(basketIndex, instrumentIndex, { isin: event.target.value.toUpperCase() })} /></td>
+                      <td><button type="button" className="text-danger" onClick={() => updateBasket(basketIndex, { instruments: basket.instruments.filter((_, currentIndex) => currentIndex !== instrumentIndex) })}>Remove</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </article>
+        ))}
+      </div>
+      <div className="basket-editor">
+        <label>
+          Import basket JSON
+          <textarea
+            value={jsonDraft}
+            onChange={(event) => setJsonDraft(event.target.value)}
+            spellCheck={false}
+            rows={10}
+            placeholder={JSON.stringify(draft, null, 2)}
+          />
+        </label>
+        {jsonError && <p className="settings-message">{jsonError}</p>}
+        <div className="instrument-toolbar">
+          <button type="button" onClick={() => setJsonDraft(JSON.stringify(draft, null, 2))}>Export current draft</button>
+          <button type="button" onClick={importJson}>Import JSON</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function lookupResultToInstrument(result: LookupResult): ScannerInstrument {
+  const exchange = result.exchange.toUpperCase() === "BSE" ? "Bse" : "Nse";
+  return {
+    symbol: result.symbol,
+    exchange,
+    isin: result.isin ?? "",
+    securityId: result.securityId,
+    key: `${exchange}:${result.symbol}`.toUpperCase()
+  };
+}
+
+function normalizeExchangeForLookup(exchange: string) {
+  return exchange.toUpperCase().startsWith("B") ? "BSE" : "NSE";
 }
 
 function SettingsEditor({

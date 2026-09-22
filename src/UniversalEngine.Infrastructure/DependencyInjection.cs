@@ -105,6 +105,8 @@ public static class DependencyInjection
             serviceProvider.GetRequiredService<SqliteScannerRepository>());
         services.AddSingleton<IEventLogRepository>(serviceProvider =>
             serviceProvider.GetRequiredService<SqliteScannerRepository>());
+        services.AddSingleton<IOutcomeFeedbackRepository>(serviceProvider =>
+            serviceProvider.GetRequiredService<SqliteScannerRepository>());
         services.AddSingleton<INotificationHistoryRepository>(serviceProvider =>
             serviceProvider.GetRequiredService<SqliteScannerRepository>());
 

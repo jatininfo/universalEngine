@@ -143,8 +143,11 @@ Owns:
 - Decoupled application UI.
 - Safe editable non-secret settings surface.
 - Safe scanner-universe editor that updates local scanner instruments without exposing credentials.
+- Basket-based scanner universe management, including named baskets such as `Nifty200`, with configurable max symbols and broker security IDs.
+- Dhan instrument-master lookup/autosuggestion in instrument and basket editing so stock name/symbol entry can populate exchange, security id, and ISIN details.
 - API-backed scanner, validation, monitoring, notification, and lookup views.
 - Selected-date pipeline readiness and prerequisite counts before manual stage runs.
+- Independent UI/API controls for every pipeline step: EOD, pre-market, opening range, live validation, monitor, backtest, AI analysis, paper trading, and paper mark-to-market. Each step must be runnable by itself with clear prerequisite messages.
 - No scanner orchestration, broker execution, provider adapters, or direct database access.
 
 The application UI consumes `UniversalEngine.Api` as its boundary so the worker and core services remain independent and replaceable.
@@ -786,6 +789,8 @@ Definition of done:
 - Application UI build passes.
 - API build passes.
 - User can run manual pipeline stages and inspect historical reports from one UI.
+- User can run each pipeline stage independently from the UI and can also run the ordered workflow.
+- User can configure manual instruments and named baskets from the UI, with lookup-assisted stock entry.
 - Historical daily cache visibility is exposed without causing broker calls.
 - Intraday/final-validation stages remain broker-direct.
 

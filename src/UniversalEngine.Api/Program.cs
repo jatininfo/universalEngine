@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using UniversalEngine.Application.Abstractions;
 using UniversalEngine.Application.Ai;
 using UniversalEngine.Application.Analysis;
+using UniversalEngine.Application.Backtesting;
 using UniversalEngine.Application.Configuration;
 using UniversalEngine.Application.Notifications;
 using UniversalEngine.Application.PaperTrading;
@@ -39,6 +40,8 @@ builder.Services.Configure<MonitoringOptions>(
     builder.Configuration.GetSection(MonitoringOptions.SectionName));
 builder.Services.Configure<AiAnalysisOptions>(
     builder.Configuration.GetSection(AiAnalysisOptions.SectionName));
+builder.Services.Configure<BacktestOptions>(
+    builder.Configuration.GetSection(BacktestOptions.SectionName));
 builder.Services.Configure<ScannerRunOptions>(
     builder.Configuration.GetSection(ScannerRunOptions.SectionName));
 builder.Services.Configure<NotificationOptions>(
@@ -54,6 +57,7 @@ builder.Services.AddSingleton<LiveValidationService>();
 builder.Services.AddSingleton<SignalMonitoringService>();
 builder.Services.AddSingleton<PaperTradingService>();
 builder.Services.AddSingleton<AiAnalysisService>();
+builder.Services.AddSingleton<BacktestReplayService>();
 builder.Services.AddSingleton<RiskVerdictService>();
 builder.Services.AddSingleton<TradePlanGenerationService>();
 builder.Services.AddSingleton<NotificationTriggerService>();
@@ -72,6 +76,19 @@ builder.Services.AddCors(options =>
 });
 
 var app = builder.Build();
+// Global exception handler: return structured JSON for unhandled exceptions
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        var feature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>();
+        var ex = feature?.Error;
+        var payload = new { message = "An unexpected error occurred.", detail = ex?.Message };
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(payload);
+    });
+});
 // Enable Swagger UI for API testing
 app.UseSwagger();
 app.UseSwaggerUI();
@@ -316,6 +333,19 @@ app.MapGet("/scanner/instruments", (
     return Results.Ok(new ScannerInstrumentsResponse(
         instruments.Length,
         options.GetDuplicateInstrumentKeys(),
+        options.GetBaskets().Select(basket => new ScannerBasketResponse(
+            basket.Name,
+            basket.Enabled,
+            basket.MaxSymbols,
+            basket.Instruments.Count,
+            basket.Instruments
+                .Select(instrument => new ScannerInstrumentResponse(
+                    instrument.Symbol,
+                    instrument.Exchange,
+                    instrument.Isin,
+                    instrument.SecurityId,
+                    $"{instrument.Exchange}:{instrument.Symbol}".ToUpperInvariant()))
+                .ToArray())).ToArray(),
         instruments));
 });
 
@@ -353,6 +383,42 @@ app.MapPut("/scanner/instruments", async (
 
     await SaveScannerInstrumentsAsync(workerLocalConfigPath, cleaned, cancellationToken);
     return Results.Ok(new { message = "Scanner instruments saved to local config. Restart API/worker to guarantee all long-lived services use the new list.", count = cleaned.Length });
+});
+
+app.MapPut("/scanner/baskets", async (
+    ScannerBasketsUpdateRequest request,
+    CancellationToken cancellationToken) =>
+{
+    var cleaned = request.Baskets
+        .Where(basket => !string.IsNullOrWhiteSpace(basket.Name))
+        .Select(basket => basket with
+        {
+            Name = basket.Name.Trim(),
+            MaxSymbols = basket.MaxSymbols <= 0 ? 200 : basket.MaxSymbols,
+            Instruments = basket.Instruments
+                .Where(instrument => !string.IsNullOrWhiteSpace(instrument.Symbol))
+                .Select(instrument => new InstrumentSettingsRequest(
+                    instrument.Symbol.Trim().ToUpperInvariant(),
+                    string.IsNullOrWhiteSpace(instrument.Exchange) ? "Nse" : instrument.Exchange.Trim(),
+                    string.IsNullOrWhiteSpace(instrument.Isin) ? null : instrument.Isin.Trim(),
+                    string.IsNullOrWhiteSpace(instrument.SecurityId) ? null : instrument.SecurityId.Trim()))
+                .ToArray()
+        })
+        .ToArray();
+
+    foreach (var basket in cleaned)
+    {
+        foreach (var instrument in basket.Instruments)
+        {
+            if (!Enum.TryParse<UniversalEngine.Domain.Market.Exchange>(instrument.Exchange, ignoreCase: true, out _))
+            {
+                return Results.BadRequest(new { message = $"Unsupported exchange '{instrument.Exchange}' for {basket.Name}:{instrument.Symbol}." });
+            }
+        }
+    }
+
+    await SaveScannerBasketsAsync(workerLocalConfigPath, cleaned, cancellationToken);
+    return Results.Ok(new { message = "Scanner baskets saved to local config. Restart API/worker to guarantee all long-lived services use the new basket.", count = cleaned.Sum(basket => basket.Instruments.Count) });
 });
 
 app.MapGet("/scanner/runs/latest", async (
@@ -544,6 +610,7 @@ app.MapPost("/pipeline/live-validation/run", async (
     string? sessionDate,
     string? from,
     string? to,
+    OpeningRangeValidationService openingRangeValidationService,
     LiveValidationService liveValidationService,
     TradePlanGenerationService tradePlanGenerationService,
     NotificationTriggerService notificationTriggerService,
@@ -566,7 +633,28 @@ app.MapPost("/pipeline/live-validation/run", async (
     var candidates = await repository.GetLatestOpeningRangeTradeCandidatesAsync(date, instruments, cancellationToken);
     if (candidates.Count == 0)
     {
-        return Results.Ok(PipelineRunResponse.Skipped("Live validation", date, "No confirmed opening-range trade candidates were found for this session."));
+        var prerequisiteCandidates = await repository.GetLatestAcceptedPreMarketCandidatesAsync(date, instruments, cancellationToken);
+        if (prerequisiteCandidates.Count == 0)
+        {
+            prerequisiteCandidates = await repository.GetLatestAcceptedEodCandidatesAsync(date, instruments, cancellationToken);
+        }
+
+        if (prerequisiteCandidates.Count == 0)
+        {
+            return Results.Ok(PipelineRunResponse.Skipped("Live validation", date, "No pre-market, EOD, or confirmed opening-range candidates were found for this session."));
+        }
+
+        var openingResult = await openingRangeValidationService.ValidateAsync(new OpeningRangeValidationRequest(date, prerequisiteCandidates), cancellationToken);
+        var openingTradePlans = openingResult.Confirmed.Select(tradePlanGenerationService.CreateFromOpeningRangeCandidate).ToArray();
+        await repository.SaveOpeningRangeRunAsync(openingResult, openingTradePlans, cancellationToken);
+        await notificationTriggerService.NotifyTradePlansAsync(openingTradePlans, openingResult.SessionDate, cancellationToken);
+        await SavePipelineEventAsync(eventLogRepository, "Opening range", openingResult.SessionDate, openingResult.Decisions.Count, openingResult.Confirmed.Count, openingResult.Decisions.Count(decision => !decision.IsAccepted), cancellationToken);
+        candidates = openingResult.Confirmed.ToArray();
+
+        if (candidates.Count == 0)
+        {
+            return Results.Ok(PipelineRunResponse.Skipped("Live validation", date, "Opening-range prerequisite ran, but no candidates were confirmed for live validation."));
+        }
     }
 
     var decisions = new List<UniversalEngine.Domain.Scanning.CandidateDecision>();
@@ -626,6 +714,42 @@ app.MapGet("/backtests/runs/{runId}/trades", async (
 {
     var trades = await repository.GetBacktestTradesAsync(runId, cancellationToken);
     return Results.Ok(trades);
+});
+
+app.MapPost("/backtests/run", async (
+    string? fromDate,
+    string? toDate,
+    BacktestReplayService backtestReplayService,
+    IBacktestReportRepository backtestReportRepository,
+    IEventLogRepository eventLogRepository,
+    Microsoft.Extensions.Options.IOptions<ScannerRunOptions> scannerOptions,
+    Microsoft.Extensions.Options.IOptions<BacktestOptions> backtestOptions,
+    CancellationToken cancellationToken) =>
+{
+    var instruments = scannerOptions.Value.GetInstruments();
+    if (instruments.Count == 0)
+    {
+        return Results.BadRequest(new { message = "No ScannerRun instruments are configured." });
+    }
+
+    var from = ParseSessionDate(fromDate, backtestOptions.Value.GetFromDate() ?? DateOnly.FromDateTime(DateTime.Today.AddDays(-5)));
+    var to = ParseSessionDate(toDate, backtestOptions.Value.GetToDate() ?? DateOnly.FromDateTime(DateTime.Today.AddDays(-1)));
+    if (from > to)
+    {
+        return Results.BadRequest(new { message = "Backtest from-date must be on or before to-date." });
+    }
+
+    var result = await backtestReplayService.RunAsync(from, to, instruments, cancellationToken);
+    await backtestReportRepository.SaveBacktestRunAsync(result, cancellationToken);
+    await SavePipelineEventAsync(eventLogRepository, "Backtest", to, result.Trades.Count, result.Wins, result.Losses + result.Flats + result.NoExitData, cancellationToken);
+
+    return Results.Ok(PipelineRunResponse.FromCounts(
+        "Backtest",
+        to,
+        result.Trades.Count,
+        result.Wins,
+        result.Losses + result.Flats + result.NoExitData,
+        $"Backtest {from:yyyy-MM-dd} to {to:yyyy-MM-dd} completed. Win rate {result.WinRatePercent:0.##}%, average return {result.AverageReturnPercent:0.####}%."));
 });
 
 app.MapGet("/accuracy/backtests/summary", async (
@@ -812,6 +936,63 @@ app.MapPost("/paper-trading/run", async (
         "Paper trading run completed. Simulated orders were recorded only; no broker order was placed."));
 });
 
+app.MapPost("/paper-trading/mark-to-market", async (
+    string? sessionDate,
+    PaperTradingService paperTradingService,
+    IMarketDataProvider marketDataProvider,
+    IPaperTradingRepository paperTradingRepository,
+    IEventLogRepository eventLogRepository,
+    Microsoft.Extensions.Options.IOptions<MonitoringOptions> monitoringOptions,
+    CancellationToken cancellationToken) =>
+{
+    var date = ParseSessionDate(sessionDate, DateOnly.FromDateTime(DateTime.Today));
+    var orders = await paperTradingRepository.GetOpenPaperOrdersAsync(date, cancellationToken);
+    if (orders.Count == 0)
+    {
+        return Results.Ok(PipelineRunResponse.Skipped("Paper mark-to-market", date, "No open paper orders were found for this session."));
+    }
+
+    var updated = 0;
+    foreach (var order in orders)
+    {
+        var instrument = new UniversalEngine.Domain.Market.Instrument(
+            order.Symbol,
+            Enum.Parse<UniversalEngine.Domain.Market.Exchange>(order.Exchange, ignoreCase: true));
+        var bars = await marketDataProvider.GetIntradayBarsAsync(
+            instrument,
+            date,
+            monitoringOptions.Value.GetStartTime(),
+            monitoringOptions.Value.GetEndTime(),
+            UniversalEngine.Domain.Market.BarInterval.FiveMinutes,
+            cancellationToken);
+        var update = paperTradingService.Evaluate(order, bars);
+        if (!update.HasChange || update.Status is null)
+        {
+            continue;
+        }
+
+        await paperTradingRepository.UpdatePaperOrderAsync(
+            update.OrderId,
+            update.Status.Value,
+            update.ExitDate,
+            update.ExitPrice,
+            update.ReturnPercent,
+            update.RealizedPnl,
+            update.SourceReason ?? order.SourceReason,
+            cancellationToken);
+        updated++;
+    }
+
+    await SavePipelineEventAsync(eventLogRepository, "Paper mark-to-market", date, orders.Count, updated, orders.Count - updated, cancellationToken);
+    return Results.Ok(PipelineRunResponse.FromCounts(
+        "Paper mark-to-market",
+        date,
+        orders.Count,
+        updated,
+        orders.Count - updated,
+        $"Paper mark-to-market completed. Updated {updated} of {orders.Count} open orders."));
+});
+
 app.MapPost("/pipeline/monitor/run", async (
     string? sessionDate,
     string? from,
@@ -876,6 +1057,77 @@ app.MapGet("/events/latest", async (
 {
     var events = await repository.GetLatestEventsAsync(limit ?? 25, cancellationToken);
     return Results.Ok(events);
+});
+
+app.MapGet("/feedback/outcomes/latest", async (
+    IOutcomeFeedbackRepository repository,
+    int? limit,
+    CancellationToken cancellationToken) =>
+{
+    var feedback = await repository.GetLatestOutcomeFeedbackAsync(limit ?? 25, cancellationToken);
+    return Results.Ok(feedback);
+});
+
+app.MapGet("/accuracy/feedback/by-recommendation", async (
+    IOutcomeFeedbackRepository repository,
+    int? limit,
+    CancellationToken cancellationToken) =>
+{
+    var feedback = await repository.GetLatestOutcomeFeedbackAsync(limit ?? 500, cancellationToken);
+    var summaries = feedback
+        .GroupBy(item => $"{item.Source}:{item.Recommendation}")
+        .OrderBy(group => group.Key)
+        .Select(group =>
+        {
+            var items = group.ToArray();
+            var wins = items.Count(item => item.Outcome.Equals("Win", StringComparison.OrdinalIgnoreCase));
+            var losses = items.Count(item => item.Outcome.Equals("Loss", StringComparison.OrdinalIgnoreCase));
+            var flats = items.Count(item => item.Outcome.Equals("Flat", StringComparison.OrdinalIgnoreCase));
+            var closed = wins + losses;
+            var returnItems = items.Where(item => item.ReturnPercent is not null).ToArray();
+            return new FeedbackCalibrationSummaryResponse(
+                group.Key,
+                items.Length,
+                wins,
+                losses,
+                flats,
+                closed == 0 ? 0m : Math.Round((decimal)wins / closed * 100m, 2),
+                returnItems.Length == 0 ? 0m : Math.Round(returnItems.Average(item => item.ReturnPercent!.Value), 4));
+        })
+        .ToArray();
+
+    return Results.Ok(summaries);
+});
+
+app.MapPost("/feedback/outcomes", async (
+    OutcomeFeedbackRequest request,
+    IOutcomeFeedbackRepository repository,
+    IEventLogRepository eventLogRepository,
+    CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Symbol) ||
+        string.IsNullOrWhiteSpace(request.Exchange) ||
+        string.IsNullOrWhiteSpace(request.Direction) ||
+        string.IsNullOrWhiteSpace(request.Source) ||
+        string.IsNullOrWhiteSpace(request.Recommendation) ||
+        string.IsNullOrWhiteSpace(request.Outcome))
+    {
+        return Results.BadRequest(new { message = "Symbol, exchange, direction, source, recommendation, and outcome are required." });
+    }
+
+    await repository.SaveOutcomeFeedbackAsync(
+        request.SessionDate,
+        request.Symbol.Trim(),
+        request.Exchange.Trim(),
+        request.Direction.Trim(),
+        request.Source.Trim(),
+        request.Recommendation.Trim(),
+        request.Outcome.Trim(),
+        request.ReturnPercent,
+        request.Notes?.Trim() ?? string.Empty,
+        cancellationToken);
+    await SavePipelineEventAsync(eventLogRepository, "Outcome feedback", request.SessionDate, 1, request.Outcome.Equals("Win", StringComparison.OrdinalIgnoreCase) ? 1 : 0, request.Outcome.Equals("Loss", StringComparison.OrdinalIgnoreCase) ? 1 : 0, cancellationToken);
+    return Results.Ok(new { message = "Outcome feedback recorded." });
 });
 
 app.MapGet("/instruments/dhan/search", async (
@@ -951,6 +1203,51 @@ static async Task SaveApplicationSettingsAsync(
         ["HistoricalCacheTtlHours"] = request.Analysis.HistoricalCacheTtlHours,
         ["HistoricalCacheRoot"] = string.Empty
     };
+
+    await File.WriteAllTextAsync(
+        configPath,
+        root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }),
+        cancellationToken);
+}
+
+static async Task SaveScannerBasketsAsync(
+    string configPath,
+    IReadOnlyList<ScannerBasketUpdateRequest> baskets,
+    CancellationToken cancellationToken)
+{
+    JsonObject root;
+    if (File.Exists(configPath))
+    {
+        var content = await File.ReadAllTextAsync(configPath, cancellationToken);
+        root = JsonNode.Parse(string.IsNullOrWhiteSpace(content) ? "{}" : content)?.AsObject() ?? new JsonObject();
+    }
+    else
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+        root = new JsonObject();
+    }
+
+    var scannerRun = root["ScannerRun"] as JsonObject ?? new JsonObject();
+    scannerRun["Baskets"] = new JsonArray(baskets
+        .Select(basket => new JsonObject
+        {
+            ["Name"] = basket.Name,
+            ["Enabled"] = basket.Enabled,
+            ["MaxSymbols"] = basket.MaxSymbols,
+            ["Instruments"] = new JsonArray(basket.Instruments
+                .Select(instr => new JsonObject
+                {
+                    ["Symbol"] = instr.Symbol,
+                    ["Exchange"] = instr.Exchange,
+                    ["Isin"] = instr.Isin,
+                    ["SecurityId"] = instr.SecurityId
+                })
+                .Cast<JsonNode?>()
+                .ToArray())
+        })
+        .Cast<JsonNode?>()
+        .ToArray());
+    root["ScannerRun"] = scannerRun;
 
     await File.WriteAllTextAsync(
         configPath,
@@ -1126,9 +1423,26 @@ public sealed record PipelineStageStatus(
 public sealed record ScannerInstrumentsResponse(
     int Count,
     IReadOnlyList<string> DuplicateInstrumentKeys,
+    IReadOnlyList<ScannerBasketResponse> Baskets,
     IReadOnlyList<ScannerInstrumentResponse> Instruments);
 
 public sealed record ScannerInstrumentsUpdateRequest(
+    IReadOnlyList<InstrumentSettingsRequest> Instruments);
+
+public sealed record ScannerBasketResponse(
+    string Name,
+    bool Enabled,
+    int MaxSymbols,
+    int InstrumentCount,
+    IReadOnlyList<ScannerInstrumentResponse> Instruments);
+
+public sealed record ScannerBasketsUpdateRequest(
+    IReadOnlyList<ScannerBasketUpdateRequest> Baskets);
+
+public sealed record ScannerBasketUpdateRequest(
+    string Name,
+    bool Enabled,
+    int MaxSymbols,
     IReadOnlyList<InstrumentSettingsRequest> Instruments);
 
 public sealed record InstrumentSettingsRequest(
@@ -1161,5 +1475,25 @@ public sealed record BacktestCalibrationSummaryResponse(
     int Losses,
     int Flats,
     int NoExitData,
+    decimal WinRatePercent,
+    decimal AverageReturnPercent);
+
+public sealed record OutcomeFeedbackRequest(
+    DateOnly SessionDate,
+    string Symbol,
+    string Exchange,
+    string Direction,
+    string Source,
+    string Recommendation,
+    string Outcome,
+    decimal? ReturnPercent,
+    string? Notes);
+
+public sealed record FeedbackCalibrationSummaryResponse(
+    string Bucket,
+    int Signals,
+    int Wins,
+    int Losses,
+    int Flats,
     decimal WinRatePercent,
     decimal AverageReturnPercent);

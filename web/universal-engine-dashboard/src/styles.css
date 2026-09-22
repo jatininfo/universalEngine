@@ -621,7 +621,8 @@ td:last-child {
   gap: 12px;
 }
 
-.pipeline-actions label {
+.pipeline-actions label,
+.backtest-runner label {
   display: grid;
   gap: 6px;
   color: #526164;
@@ -629,7 +630,8 @@ td:last-child {
   font-weight: 700;
 }
 
-.pipeline-actions input {
+.pipeline-actions input,
+.backtest-runner input {
   height: 38px;
   border: 1px solid #cfdad8;
   border-radius: 6px;
@@ -655,6 +657,29 @@ td:last-child {
 .run-buttons button:disabled {
   background: #a7b8b5;
   cursor: progress;
+}
+
+.backtest-runner {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(140px, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 14px;
+  border-bottom: 1px solid #e8efee;
+}
+
+.backtest-runner button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 6px;
+  background: #176b5b;
+  color: #ffffff;
+  padding: 0 14px;
+  cursor: pointer;
+}
+
+.backtest-runner button:disabled {
+  background: #a7b8b5;
 }
 
 .run-note {
@@ -1023,6 +1048,14 @@ td:last-child {
   justify-content: flex-end;
 }
 
+.primary-toolbar {
+  justify-content: flex-start;
+  padding: 10px;
+  border: 1px solid #dfe9e7;
+  border-radius: 8px;
+  background: #f7faf9;
+}
+
 .instrument-toolbar button,
 .editable-table button {
   min-height: 36px;
@@ -1043,6 +1076,189 @@ td:last-child {
   border-radius: 6px;
   padding: 0 8px;
   background: #ffffff;
+}
+
+.instrument-lookup {
+  position: relative;
+  min-width: 190px;
+}
+
+.instrument-lookup input {
+  width: 100%;
+}
+
+.lookup-suggestions {
+  width: min(360px, 80vw);
+  max-height: 260px;
+  overflow-y: auto;
+  position: absolute;
+  z-index: 25;
+  top: calc(100% + 4px);
+  left: 0;
+  display: grid;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid #cfdad8;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 16px 32px rgba(18, 52, 59, 0.16);
+}
+
+.lookup-suggestions > span {
+  padding: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.lookup-suggestions button {
+  min-height: auto;
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  border: 0;
+  border-radius: 6px;
+  padding: 8px;
+  background: #f7faf9;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.lookup-suggestions button:hover {
+  background: #e8f2ef;
+}
+
+.lookup-suggestions strong {
+  font-size: 13px;
+}
+
+.lookup-suggestions small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.basket-builder {
+  display: grid;
+  gap: 12px;
+}
+
+.empty-editor {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  padding: 16px;
+  border: 1px dashed #bfd4d0;
+  border-radius: 8px;
+  background: #fbfdfc;
+}
+
+.empty-editor strong {
+  color: var(--ink);
+}
+
+.empty-editor span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.empty-editor button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--brand);
+  color: #ffffff;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.basket-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e4ecea;
+  border-radius: 8px;
+  background: #fbfdfc;
+}
+
+.basket-card > header {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(120px, auto) minmax(140px, 180px) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.basket-card > header input,
+.basket-card > header select,
+.basket-card > header input[type="number"] {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid #cfdad8;
+  border-radius: 6px;
+  padding: 0 8px;
+  background: #ffffff;
+}
+
+.basket-card .toggle-row {
+  min-height: 36px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.basket-card label {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.basket-card button,
+.basket-add-row button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--brand);
+  color: #ffffff;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.basket-card .text-danger {
+  background: #fff0ef;
+  color: var(--bad);
+}
+
+.basket-add-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  max-width: 360px;
+}
+
+.basket-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.basket-editor label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.basket-editor textarea {
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
+  border: 1px solid #cfdad8;
+  border-radius: 8px;
+  padding: 10px;
+  color: var(--ink);
+  background: #ffffff;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .editable-table .text-danger {
@@ -1209,7 +1425,8 @@ td:last-child {
   .metrics,
   .split,
   .breakdown-columns,
-  .settings-grid {
+  .settings-grid,
+  .basket-card > header {
     grid-template-columns: 1fr;
   }
 }
@@ -1242,6 +1459,10 @@ td:last-child {
 
   .lookup-form {
     grid-template-columns: 22px 1fr;
+  }
+
+  .backtest-runner {
+    grid-template-columns: 1fr;
   }
 
   .lookup-form button {
