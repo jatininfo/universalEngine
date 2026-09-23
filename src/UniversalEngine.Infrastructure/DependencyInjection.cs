@@ -109,6 +109,8 @@ public static class DependencyInjection
             serviceProvider.GetRequiredService<SqliteScannerRepository>());
         services.AddSingleton<INotificationHistoryRepository>(serviceProvider =>
             serviceProvider.GetRequiredService<SqliteScannerRepository>());
+        services.AddSingleton<IInstrumentUniverseRepository>(serviceProvider =>
+            serviceProvider.GetRequiredService<SqliteScannerRepository>());
 
         return services;
     }

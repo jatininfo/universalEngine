@@ -1041,6 +1041,36 @@ td:last-child {
   gap: 12px;
 }
 
+.instrument-quick-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid #dfe9e7;
+  border-radius: 8px;
+  background: #f7faf9;
+}
+
+.instrument-quick-add label {
+  display: grid;
+  gap: 6px;
+  min-width: min(320px, 100%);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.instrument-quick-add button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--brand);
+  color: #ffffff;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
 .instrument-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -1463,6 +1493,10 @@ td:last-child {
 
   .backtest-runner {
     grid-template-columns: 1fr;
+  }
+
+  .instrument-quick-add {
+    display: grid;
   }
 
   .lookup-form button {

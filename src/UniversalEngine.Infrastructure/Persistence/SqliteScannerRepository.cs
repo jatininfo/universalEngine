@@ -21,9 +21,164 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
     IAiAnalysisRepository,
     IEventLogRepository,
     IOutcomeFeedbackRepository,
-    INotificationHistoryRepository
+    INotificationHistoryRepository,
+    IInstrumentUniverseRepository
 {
     private readonly string _connectionString = options.Value.ConnectionString;
+
+    public async Task<ScannerUniverseState> GetScannerUniverseStateAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        var instruments = await GetConfiguredScannerInstrumentsAsync(connection, cancellationToken);
+        var baskets = await GetConfiguredScannerBasketsAsync(connection, cancellationToken);
+        var universes = await GetConfiguredScannerUniversesAsync(connection, baskets, instruments, cancellationToken);
+        return new ScannerUniverseState(instruments, baskets, universes);
+    }
+
+    public async Task SaveScannerInstrumentsAsync(
+        IReadOnlyList<ScannerInstrumentDefinition> instruments,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await ExecuteAsync(connection, "DELETE FROM ScannerInstruments;", cancellationToken);
+
+        for (var index = 0; index < instruments.Count; index++)
+        {
+            var instrument = instruments[index];
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO ScannerInstruments
+                    (Symbol, Exchange, Isin, SecurityId, IsActive, SortOrder, UpdatedAtUtc)
+                VALUES
+                    ($symbol, $exchange, $isin, $securityId, 1, $sortOrder, $updatedAtUtc);
+                """,
+                cancellationToken,
+                ("$symbol", instrument.Symbol),
+                ("$exchange", instrument.Exchange),
+                ("$isin", instrument.Isin),
+                ("$securityId", instrument.SecurityId),
+                ("$sortOrder", index),
+                ("$updatedAtUtc", NowText()));
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task SaveScannerBasketsAsync(
+        IReadOnlyList<ScannerBasketDefinition> baskets,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await ExecuteAsync(connection, "DELETE FROM ScannerBasketInstruments;", cancellationToken);
+        await ExecuteAsync(connection, "DELETE FROM ScannerBaskets;", cancellationToken);
+
+        foreach (var basket in baskets)
+        {
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO ScannerBaskets
+                    (Name, Enabled, MaxSymbols, UpdatedAtUtc)
+                VALUES
+                    ($name, $enabled, $maxSymbols, $updatedAtUtc);
+                """,
+                cancellationToken,
+                ("$name", basket.Name),
+                ("$enabled", basket.Enabled ? 1 : 0),
+                ("$maxSymbols", basket.MaxSymbols),
+                ("$updatedAtUtc", NowText()));
+
+            for (var index = 0; index < basket.Instruments.Count; index++)
+            {
+                var instrument = basket.Instruments[index];
+                await ExecuteAsync(
+                    connection,
+                    """
+                    INSERT INTO ScannerBasketInstruments
+                        (BasketName, Symbol, Exchange, Isin, SecurityId, SortOrder)
+                    VALUES
+                        ($basketName, $symbol, $exchange, $isin, $securityId, $sortOrder);
+                    """,
+                    cancellationToken,
+                    ("$basketName", basket.Name),
+                    ("$symbol", instrument.Symbol),
+                    ("$exchange", instrument.Exchange),
+                    ("$isin", instrument.Isin),
+                    ("$securityId", instrument.SecurityId),
+                    ("$sortOrder", index));
+            }
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task SaveScannerUniversesAsync(
+        IReadOnlyList<ScannerUniverseDefinition> universes,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await ExecuteAsync(connection, "DELETE FROM ScannerUniverseBaskets;", cancellationToken);
+        await ExecuteAsync(connection, "DELETE FROM ScannerUniverseInstruments;", cancellationToken);
+        await ExecuteAsync(connection, "DELETE FROM ScannerUniverses;", cancellationToken);
+
+        foreach (var universe in universes)
+        {
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO ScannerUniverses
+                    (Name, Enabled, UpdatedAtUtc)
+                VALUES
+                    ($name, $enabled, $updatedAtUtc);
+                """,
+                cancellationToken,
+                ("$name", universe.Name),
+                ("$enabled", universe.Enabled ? 1 : 0),
+                ("$updatedAtUtc", NowText()));
+
+            for (var index = 0; index < universe.Instruments.Count; index++)
+            {
+                var instrument = universe.Instruments[index];
+                await ExecuteAsync(
+                    connection,
+                    """
+                    INSERT INTO ScannerUniverseInstruments
+                        (UniverseName, Symbol, Exchange, Isin, SecurityId, SortOrder)
+                    VALUES
+                        ($universeName, $symbol, $exchange, $isin, $securityId, $sortOrder);
+                    """,
+                    cancellationToken,
+                    ("$universeName", universe.Name),
+                    ("$symbol", instrument.Symbol),
+                    ("$exchange", instrument.Exchange),
+                    ("$isin", instrument.Isin),
+                    ("$securityId", instrument.SecurityId),
+                    ("$sortOrder", index));
+            }
+
+            for (var index = 0; index < universe.BasketNames.Count; index++)
+            {
+                await ExecuteAsync(
+                    connection,
+                    """
+                    INSERT INTO ScannerUniverseBaskets
+                        (UniverseName, BasketName, SortOrder)
+                    VALUES
+                        ($universeName, $basketName, $sortOrder);
+                    """,
+                    cancellationToken,
+                    ("$universeName", universe.Name),
+                    ("$basketName", universe.BasketNames[index]),
+                    ("$sortOrder", index));
+            }
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
 
     public async Task SaveEodRunAsync(
         EodCandidateGenerationResult result,
@@ -1211,6 +1366,194 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
         return decisions;
     }
 
+    private static async Task<IReadOnlyList<ScannerInstrumentDefinition>> GetConfiguredScannerInstrumentsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var command = CreateCommand(
+            connection,
+            """
+            SELECT Symbol, Exchange, Isin, SecurityId
+            FROM ScannerInstruments
+            WHERE IsActive = 1
+            ORDER BY SortOrder ASC, Exchange ASC, Symbol ASC;
+            """);
+
+        return await ReadInstrumentDefinitionsAsync(command, cancellationToken);
+    }
+
+    private static async Task<IReadOnlyList<ScannerBasketDefinition>> GetConfiguredScannerBasketsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var basketCommand = CreateCommand(
+            connection,
+            """
+            SELECT Name, Enabled, MaxSymbols
+            FROM ScannerBaskets
+            ORDER BY Name ASC;
+            """);
+
+        var baskets = new List<ScannerBasketDefinition>();
+        await using var reader = await basketCommand.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var name = reader.GetString(0);
+            var instruments = await GetBasketInstrumentsAsync(connection, name, cancellationToken);
+            baskets.Add(new ScannerBasketDefinition(
+                name,
+                reader.GetInt32(1) == 1,
+                reader.GetInt32(2),
+                instruments.Count,
+                instruments));
+        }
+
+        return baskets;
+    }
+
+    private static async Task<IReadOnlyList<ScannerUniverseDefinition>> GetConfiguredScannerUniversesAsync(
+        SqliteConnection connection,
+        IReadOnlyList<ScannerBasketDefinition> baskets,
+        IReadOnlyList<ScannerInstrumentDefinition> baseInstruments,
+        CancellationToken cancellationToken)
+    {
+        await using var universeCommand = CreateCommand(
+            connection,
+            """
+            SELECT Name, Enabled
+            FROM ScannerUniverses
+            ORDER BY Name ASC;
+            """);
+
+        var universes = new List<ScannerUniverseDefinition>();
+        await using var reader = await universeCommand.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var name = reader.GetString(0);
+            var basketNames = await GetUniverseBasketNamesAsync(connection, name, cancellationToken);
+            var directInstruments = await GetUniverseInstrumentsAsync(connection, name, cancellationToken);
+            var expanded = directInstruments
+                .Concat(baskets.Where(basket => basketNames.Contains(basket.Name, StringComparer.OrdinalIgnoreCase))
+                    .SelectMany(basket => basket.Instruments.Take(basket.MaxSymbols <= 0 ? int.MaxValue : basket.MaxSymbols)))
+                .GroupBy(instrument => instrument.Key)
+                .Select(group => group.First())
+                .ToArray();
+
+            universes.Add(new ScannerUniverseDefinition(
+                name,
+                reader.GetInt32(1) == 1,
+                expanded.Length,
+                basketNames,
+                expanded));
+        }
+
+        if (universes.Count == 0 && (baseInstruments.Count > 0 || baskets.Count > 0))
+        {
+            var defaultInstruments = baseInstruments
+                .Concat(baskets.Where(basket => basket.Enabled)
+                    .SelectMany(basket => basket.Instruments.Take(basket.MaxSymbols <= 0 ? int.MaxValue : basket.MaxSymbols)))
+                .GroupBy(instrument => instrument.Key)
+                .Select(group => group.First())
+                .ToArray();
+
+            universes.Add(new ScannerUniverseDefinition(
+                "Default",
+                true,
+                defaultInstruments.Length,
+                baskets.Where(basket => basket.Enabled).Select(basket => basket.Name).ToArray(),
+                defaultInstruments));
+        }
+
+        return universes;
+    }
+
+    private static async Task<IReadOnlyList<ScannerInstrumentDefinition>> GetBasketInstrumentsAsync(
+        SqliteConnection connection,
+        string basketName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = CreateCommand(
+            connection,
+            """
+            SELECT Symbol, Exchange, Isin, SecurityId
+            FROM ScannerBasketInstruments
+            WHERE BasketName = $basketName
+            ORDER BY SortOrder ASC, Exchange ASC, Symbol ASC;
+            """,
+            ("$basketName", basketName));
+
+        return await ReadInstrumentDefinitionsAsync(command, cancellationToken);
+    }
+
+    private static async Task<IReadOnlyList<ScannerInstrumentDefinition>> GetUniverseInstrumentsAsync(
+        SqliteConnection connection,
+        string universeName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = CreateCommand(
+            connection,
+            """
+            SELECT Symbol, Exchange, Isin, SecurityId
+            FROM ScannerUniverseInstruments
+            WHERE UniverseName = $universeName
+            ORDER BY SortOrder ASC, Exchange ASC, Symbol ASC;
+            """,
+            ("$universeName", universeName));
+
+        return await ReadInstrumentDefinitionsAsync(command, cancellationToken);
+    }
+
+    private static async Task<IReadOnlyList<string>> GetUniverseBasketNamesAsync(
+        SqliteConnection connection,
+        string universeName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = CreateCommand(
+            connection,
+            """
+            SELECT BasketName
+            FROM ScannerUniverseBaskets
+            WHERE UniverseName = $universeName
+            ORDER BY SortOrder ASC, BasketName ASC;
+            """,
+            ("$universeName", universeName));
+
+        var names = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            names.Add(reader.GetString(0));
+        }
+
+        return names;
+    }
+
+    private static async Task<IReadOnlyList<ScannerInstrumentDefinition>> ReadInstrumentDefinitionsAsync(
+        SqliteCommand command,
+        CancellationToken cancellationToken)
+    {
+        var instruments = new List<ScannerInstrumentDefinition>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            instruments.Add(ToScannerInstrumentDefinition(reader));
+        }
+
+        return instruments;
+    }
+
+    private static ScannerInstrumentDefinition ToScannerInstrumentDefinition(SqliteDataReader reader)
+    {
+        var symbol = reader.GetString(0);
+        var exchange = reader.GetString(1);
+        return new ScannerInstrumentDefinition(
+            symbol,
+            exchange,
+            GetString(reader, 2),
+            GetString(reader, 3),
+            $"{exchange}:{symbol}".ToUpperInvariant());
+    }
+
     private async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
         var connection = new SqliteConnection(_connectionString);
@@ -1481,6 +1824,60 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
                 ResponseJson TEXT NOT NULL,
                 CreatedAtUtc TEXT NOT NULL,
                 FOREIGN KEY (RunId) REFERENCES AiAnalysisRuns(Id)
+            );
+
+            CREATE TABLE IF NOT EXISTS ScannerInstruments (
+                Symbol TEXT NOT NULL,
+                Exchange TEXT NOT NULL,
+                Isin TEXT NULL,
+                SecurityId TEXT NULL,
+                IsActive INTEGER NOT NULL,
+                SortOrder INTEGER NOT NULL,
+                UpdatedAtUtc TEXT NOT NULL,
+                PRIMARY KEY (Symbol, Exchange)
+            );
+
+            CREATE TABLE IF NOT EXISTS ScannerBaskets (
+                Name TEXT PRIMARY KEY,
+                Enabled INTEGER NOT NULL,
+                MaxSymbols INTEGER NOT NULL,
+                UpdatedAtUtc TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ScannerBasketInstruments (
+                BasketName TEXT NOT NULL,
+                Symbol TEXT NOT NULL,
+                Exchange TEXT NOT NULL,
+                Isin TEXT NULL,
+                SecurityId TEXT NULL,
+                SortOrder INTEGER NOT NULL,
+                PRIMARY KEY (BasketName, Symbol, Exchange),
+                FOREIGN KEY (BasketName) REFERENCES ScannerBaskets(Name)
+            );
+
+            CREATE TABLE IF NOT EXISTS ScannerUniverses (
+                Name TEXT PRIMARY KEY,
+                Enabled INTEGER NOT NULL,
+                UpdatedAtUtc TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ScannerUniverseInstruments (
+                UniverseName TEXT NOT NULL,
+                Symbol TEXT NOT NULL,
+                Exchange TEXT NOT NULL,
+                Isin TEXT NULL,
+                SecurityId TEXT NULL,
+                SortOrder INTEGER NOT NULL,
+                PRIMARY KEY (UniverseName, Symbol, Exchange),
+                FOREIGN KEY (UniverseName) REFERENCES ScannerUniverses(Name)
+            );
+
+            CREATE TABLE IF NOT EXISTS ScannerUniverseBaskets (
+                UniverseName TEXT NOT NULL,
+                BasketName TEXT NOT NULL,
+                SortOrder INTEGER NOT NULL,
+                PRIMARY KEY (UniverseName, BasketName),
+                FOREIGN KEY (UniverseName) REFERENCES ScannerUniverses(Name)
             );
             """;
 

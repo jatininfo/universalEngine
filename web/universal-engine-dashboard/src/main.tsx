@@ -250,6 +250,8 @@ type ScannerBasketDraft = {
   instruments: ScannerInstrument[];
 };
 
+type RunUniverseMode = "all" | "basket" | "instrument";
+
 type PipelineRunResult = {
   stage: string;
   sessionDate: string;
@@ -416,6 +418,9 @@ function App() {
   });
   const [fromTime, setFromTime] = React.useState("09:30");
   const [toTime, setToTime] = React.useState("10:00");
+  const [runUniverseMode, setRunUniverseMode] = React.useState<RunUniverseMode>("all");
+  const [selectedBasketName, setSelectedBasketName] = React.useState("");
+  const [selectedInstrumentKey, setSelectedInstrumentKey] = React.useState("");
   const [runningStage, setRunningStage] = React.useState<string | null>(null);
   const [runResult, setRunResult] = React.useState<PipelineRunResult | null>(null);
   const [lastRefresh, setLastRefresh] = React.useState<Date | null>(null);
@@ -564,8 +569,7 @@ function App() {
     setState((current) => ({ ...current, error: null }));
 
     try {
-      const separator = path.includes("?") ? "&" : "?";
-      const result = await postJson<PipelineRunResult>(`${path}${separator}sessionDate=${runDate}`);
+      const result = await postJson<PipelineRunResult>(appendRunQuery(path, runDate));
       setRunResult(result);
       await loadDashboard();
     } catch (error) {
@@ -584,7 +588,7 @@ function App() {
     setState((current) => ({ ...current, error: null }));
 
     try {
-      const result = await postJson<PipelineRunResult>(`/backtests/run?fromDate=${backtestFromDate}&toDate=${backtestToDate}`);
+      const result = await postJson<PipelineRunResult>(appendRunQuery(`/backtests/run?fromDate=${backtestFromDate}&toDate=${backtestToDate}`, null));
       setRunResult(result);
       await loadDashboard();
     } catch (error) {
@@ -616,8 +620,7 @@ function App() {
       let latest: PipelineRunResult | null = null;
       for (const [stage, path] of stages) {
         setRunningStage(stage);
-        const separator = path.includes("?") ? "&" : "?";
-        latest = await postJson<PipelineRunResult>(`${path}${separator}sessionDate=${runDate}`);
+        latest = await postJson<PipelineRunResult>(appendRunQuery(path, runDate));
         if (latest.status === "Skipped" && stage !== "Pre-market") {
           break;
         }
@@ -675,6 +678,36 @@ function App() {
   const actionable = state.monitorRuns[0]?.actionableCount ?? 0;
   const notificationFailures = state.notifications.filter((item) => !item.isSuccess).length;
   const connectedBrokers = state.brokerStatuses.filter((item) => item.isConnected).length;
+  const enabledBaskets = state.scannerInstruments?.baskets.filter((basket) => basket.enabled || basket.name === selectedBasketName) ?? [];
+  const runUniverseLabel = runUniverseMode === "basket"
+    ? selectedBasketName || "Choose basket"
+    : runUniverseMode === "instrument"
+      ? selectedInstrumentKey || "Choose stock"
+      : `${state.scannerInstruments?.count ?? 0} active instruments`;
+  const isRunUniverseReady = runUniverseMode === "all"
+    || (runUniverseMode === "basket" && Boolean(selectedBasketName))
+    || (runUniverseMode === "instrument" && Boolean(selectedInstrumentKey));
+  const appendRunQuery = (path: string, sessionDate: string | null) => {
+    const params = new URLSearchParams();
+    if (sessionDate) {
+      params.set("sessionDate", sessionDate);
+    }
+
+    if (runUniverseMode === "basket" && selectedBasketName) {
+      params.set("basketName", selectedBasketName);
+    }
+
+    if (runUniverseMode === "instrument" && selectedInstrumentKey) {
+      params.set("instrumentKey", selectedInstrumentKey);
+    }
+
+    const query = params.toString();
+    if (!query) {
+      return path;
+    }
+
+    return `${path}${path.includes("?") ? "&" : "?"}${query}`;
+  };
   const openMenu = () => {
     setSidebarCollapsed(false);
     setMenuOpen(true);
@@ -795,22 +828,52 @@ function App() {
                 To
                 <input type="time" value={toTime} onChange={(event) => setToTime(event.target.value)} />
               </label>
+              <label>
+                Scan universe
+                <select value={runUniverseMode} onChange={(event) => setRunUniverseMode(event.target.value as RunUniverseMode)}>
+                  <option value="all">All active</option>
+                  <option value="basket">Basket</option>
+                  <option value="instrument">One stock</option>
+                </select>
+              </label>
+              {runUniverseMode === "basket" && (
+                <label>
+                  Basket
+                  <select value={selectedBasketName} onChange={(event) => setSelectedBasketName(event.target.value)}>
+                    <option value="">Choose basket</option>
+                    {enabledBaskets.map((basket) => (
+                      <option key={basket.name} value={basket.name}>{basket.name} ({basket.instrumentCount})</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {runUniverseMode === "instrument" && (
+                <label>
+                  Stock
+                  <select value={selectedInstrumentKey} onChange={(event) => setSelectedInstrumentKey(event.target.value)}>
+                    <option value="">Choose stock</option>
+                    {(state.scannerInstruments?.instruments ?? []).map((instrument) => (
+                      <option key={instrument.key} value={instrument.key}>{instrument.symbol} ({instrument.exchange})</option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <div className="run-buttons">
-                <button type="button" disabled={runningStage !== null} onClick={() => void runWorkflow()}>Run Workflow</button>
-                <button type="button" disabled={runningStage !== null} onClick={() => void runPipelineStage("EOD", "/pipeline/eod/run")}>Run EOD</button>
-                <button type="button" disabled={runningStage !== null} onClick={() => void runPipelineStage("Pre-market", "/pipeline/pre-market/run")}>Run Pre-market</button>
-                <button type="button" disabled={runningStage !== null} onClick={() => void runPipelineStage("Opening range", "/pipeline/opening-range/run")}>Run Opening</button>
-                <button type="button" disabled={runningStage !== null} onClick={() => void runPipelineStage("Live validation", `/pipeline/live-validation/run?from=${fromTime}&to=${toTime}`)}>Run Live</button>
-                <button type="button" disabled={runningStage !== null} onClick={() => void runPipelineStage("Monitor", `/pipeline/monitor/run?from=${fromTime}&to=${toTime}`)}>Run Monitor</button>
-                <button type="button" disabled={runningStage !== null} onClick={() => void runPipelineStage("AI analysis", "/ai/run")}>Run AI</button>
-                <button type="button" disabled={runningStage !== null} onClick={() => void runPipelineStage("Paper trading", "/paper-trading/run")}>Run Paper</button>
-                <button type="button" disabled={runningStage !== null} onClick={() => void runPipelineStage("Paper mark-to-market", "/paper-trading/mark-to-market")}>Mark Paper</button>
+                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runWorkflow()}>Run Workflow</button>
+                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("EOD", "/pipeline/eod/run")}>Run EOD</button>
+                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Pre-market", "/pipeline/pre-market/run")}>Run Pre-market</button>
+                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Opening range", "/pipeline/opening-range/run")}>Run Opening</button>
+                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Live validation", `/pipeline/live-validation/run?from=${fromTime}&to=${toTime}`)}>Run Live</button>
+                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Monitor", `/pipeline/monitor/run?from=${fromTime}&to=${toTime}`)}>Run Monitor</button>
+                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("AI analysis", "/ai/run")}>Run AI</button>
+                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Paper trading", "/paper-trading/run")}>Run Paper</button>
+                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Paper mark-to-market", "/paper-trading/mark-to-market")}>Mark Paper</button>
               </div>
               <PipelineReadiness status={state.pipelineStatus} />
               <DataSourceReadiness settings={state.dataSourceSettings} />
               <PipelineReadinessChart status={state.pipelineStatus} />
               <p className="run-note">
-                {runningStage ? `Running ${runningStage}...` : runResult ? `${runResult.stage}: ${runResult.status}; evaluated ${runResult.evaluatedCount}, accepted ${runResult.acceptedCount}, rejected ${runResult.rejectedCount}. ${runResult.message}` : "Manual runs persist audit records and never place orders."}
+                {runningStage ? `Running ${runningStage} for ${runUniverseLabel}...` : runResult ? `${runResult.stage}: ${runResult.status}; evaluated ${runResult.evaluatedCount}, accepted ${runResult.acceptedCount}, rejected ${runResult.rejectedCount}. ${runResult.message}` : isRunUniverseReady ? `Manual runs use ${runUniverseLabel} and never place orders.` : "Choose a basket or stock before running."}
               </p>
             </div>
           </Panel>
@@ -844,14 +907,6 @@ function App() {
         </section>
 
         <section id="instruments">
-          <Panel title="Active Scanner Instruments" action={state.scannerInstruments ? `${state.scannerInstruments.count} active` : "Loading"}>
-            <InstrumentEditor
-              instruments={instrumentDraft}
-              message={instrumentMessage}
-              onChange={setInstrumentDraft}
-              onSave={() => void saveScannerInstruments()}
-            />
-          </Panel>
           <Panel title="Scanner Baskets" action={state.scannerInstruments ? `${state.scannerInstruments.baskets.filter((basket) => basket.enabled).length}/${state.scannerInstruments.baskets.length} enabled` : "Loading"}>
             <BasketEditor
               baskets={state.scannerInstruments?.baskets ?? []}
@@ -859,6 +914,14 @@ function App() {
               message={basketMessage}
               onChange={setBasketDraft}
               onSave={() => void saveScannerBaskets()}
+            />
+          </Panel>
+          <Panel title="Active Scanner Instruments" action={state.scannerInstruments ? `${state.scannerInstruments.count} active` : "Loading"}>
+            <InstrumentEditor
+              instruments={instrumentDraft}
+              message={instrumentMessage}
+              onChange={setInstrumentDraft}
+              onSave={() => void saveScannerInstruments()}
             />
           </Panel>
         </section>
@@ -1707,12 +1770,36 @@ function InstrumentEditor({
 }) {
   const updateInstrument = (index: number, patch: Partial<ScannerInstrument>) =>
     onChange(instruments.map((instrument, currentIndex) => currentIndex === index ? { ...instrument, ...patch } : instrument));
+  const addBlankInstrument = () =>
+    onChange([{ symbol: "", exchange: "Nse", isin: "", securityId: "", key: "" }, ...instruments]);
+  const addLookupInstrument = (result: LookupResult) => {
+    const nextInstrument = lookupResultToInstrument(result);
+    const nextKey = nextInstrument.key;
+    if (instruments.some((instrument) => instrument.key === nextKey || `${instrument.exchange}:${instrument.symbol}`.toUpperCase() === nextKey)) {
+      return;
+    }
+
+    onChange([nextInstrument, ...instruments]);
+  };
 
   return (
     <div className="instrument-editor">
       {message && <p className="settings-message">{message}</p>}
+      <div className="instrument-quick-add">
+        <label>
+          Add stock
+          <InstrumentLookupInput
+            value=""
+            exchange="Nse"
+            placeholder="Search stock"
+            clearAfterSelect
+            onValueChange={() => undefined}
+            onSelect={addLookupInstrument}
+          />
+        </label>
+        <button type="button" onClick={addBlankInstrument}>Add blank row</button>
+      </div>
       <div className="instrument-toolbar">
-        <button type="button" onClick={() => onChange([...instruments, { symbol: "", exchange: "Nse", isin: "", securityId: "", key: "" }])}>Add instrument</button>
         <button type="button" onClick={onSave}>Save instruments</button>
       </div>
       <div className="table-scroll">
