@@ -58,7 +58,7 @@ public sealed class EodCandidateGenerationServiceTests
         new(
             new FakeMarketDataProvider(bars),
             new TechnicalIndicatorService(),
-            new ScannerScoringService(),
+            new ScannerScoringService(Options.Create(options ?? new EodScannerOptions { LookbackDays = 3, MinimumAverageTradedValue = 1_000_000m })),
             Options.Create(options ?? new EodScannerOptions { LookbackDays = 3, MinimumAverageTradedValue = 1_000_000m }));
 
     private static IReadOnlyList<DailyBar> CreateBars(
@@ -96,7 +96,7 @@ public sealed class EodCandidateGenerationServiceTests
         return bars;
     }
 
-    private sealed class FakeMarketDataProvider(IReadOnlyList<DailyBar> bars) : IMarketDataProvider
+    private sealed class FakeMarketDataProvider(IReadOnlyList<DailyBar> bars) : IAnalysisMarketDataProvider
     {
         public Task<IReadOnlyList<DailyBar>> GetDailyBarsAsync(
             IReadOnlyList<Instrument> instruments,

@@ -12,9 +12,16 @@ public enum DecisionReasonCode
     InsufficientLiquidity = 103,
     InsufficientVolumeExpansion = 104,
     CloseLocationNotConfirmed = 105,
+    ScannerScoreBelowThreshold = 106,
+    ScannerShortlistLimitExceeded = 107,
+    PreMarketAccepted = 150,
+    PreMarketDataUnavailable = 151,
+    PreMarketGapTooLarge = 152,
     OpeningRangeBreakout = 200,
     OpeningRangeBreakdown = 201,
     OpeningRangeNotConfirmed = 202,
     MissingIntradayData = 203,
-    StaleIntradayData = 204
+    StaleIntradayData = 204,
+    LiveValidationConfirmed = 300,
+    LiveValidationNotConfirmed = 301
 }

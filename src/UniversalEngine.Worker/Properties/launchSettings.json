@@ -1,12 +1,13 @@
-﻿{
-  "$schema": "https://json.schemastore.org/launchsettings.json",
+{
   "profiles": {
     "UniversalEngine.Worker": {
       "commandName": "Project",
-      "dotnetRunMessages": true,
+      "commandLineArgs": "--run-eod-now",
       "environmentVariables": {
         "DOTNET_ENVIRONMENT": "Development"
-      }
+      },
+      "dotnetRunMessages": true
     }
-  }
+  },
+  "$schema": "https://json.schemastore.org/launchsettings.json"
 }

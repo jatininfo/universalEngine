@@ -136,6 +136,22 @@ Owns:
 - Candidate and active signal read endpoints
 - Notification history read endpoints
 
+### `web/universal-engine-dashboard`
+
+Owns:
+
+- Decoupled application UI.
+- Safe editable non-secret settings surface.
+- Safe scanner-universe editor that updates local scanner instruments without exposing credentials.
+- Basket-based scanner universe management, including named baskets such as `Nifty200`, with configurable max symbols and broker security IDs.
+- Dhan instrument-master lookup/autosuggestion in instrument and basket editing so stock name/symbol entry can populate exchange, security id, and ISIN details.
+- API-backed scanner, validation, monitoring, notification, and lookup views.
+- Selected-date pipeline readiness and prerequisite counts before manual stage runs.
+- Independent UI/API controls for every pipeline step: EOD, pre-market, opening range, live validation, monitor, backtest, AI analysis, paper trading, and paper mark-to-market. Each step must be runnable by itself with clear prerequisite messages.
+- No scanner orchestration, broker execution, provider adapters, or direct database access.
+
+The application UI consumes `UniversalEngine.Api` as its boundary so the worker and core services remain independent and replaceable.
+
 ## 4. Milestone 0: Repository Bootstrap
 
 Deliverables:
@@ -637,7 +653,7 @@ Acceptance criteria:
 - Event handlers are idempotent.
 - Message processing has retry/dead-letter behavior.
 
-## 18. Milestone 14: Optional API/Dashboard
+## 18. Milestone 14: API/Application UI
 
 Deliverables:
 
@@ -647,13 +663,14 @@ Deliverables:
 - Active signals endpoint.
 - Notification history endpoint.
 - Accuracy and calibration endpoints.
-- Angular dashboard in later production scope.
+- Decoupled application UI in later production scope.
 
 Acceptance criteria:
 
-- API is read-only for MVP.
+- API supports safe operational actions and non-secret settings updates.
 - API cannot place orders.
 - API exposes explainability data.
+- Application UI calls only the API and does not directly reference worker, infrastructure, broker, or provider services.
 
 ## 19. Milestone 15: Broker Integration Guarded Phase
 
@@ -748,6 +765,34 @@ Planning checkpoint:
 
 - Attached development plan has been imported into `docs/source-material/` and reconciled into the roadmap.
 - Before implementing real broker execution, verify backtesting, paper trading, and safety milestones are complete.
+
+## 22. Safety Checklist
+
+## 21A. Dashboard UX and Reporting Workbench
+
+Goal:
+
+- Provide a user-friendly control room for manual pipeline execution, broker readiness, cache status, historical execution review, and analysis reports.
+
+Scope:
+
+- Keep application UI decoupled from worker and core application services; consume `UniversalEngine.Api` only.
+- Allow safe editing of non-secret operational settings from the UI.
+- Show workflow timeline for EOD, pre-market, opening range, live validation, and monitoring.
+- Show broker/cache data-source status, including where historical cache is safe and where realtime broker calls are required.
+- Show historical execution details from persisted runs and event log.
+- Show report infographics for backtest accuracy, calibration, EOD candidate mix, paper-order status, and notification health.
+- Preserve notification-only behavior and make clear that no order is placed.
+
+Definition of done:
+
+- Application UI build passes.
+- API build passes.
+- User can run manual pipeline stages and inspect historical reports from one UI.
+- User can run each pipeline stage independently from the UI and can also run the ordered workflow.
+- User can configure manual instruments and named baskets from the UI, with lookup-assisted stock entry.
+- Historical daily cache visibility is exposed without causing broker calls.
+- Intraday/final-validation stages remain broker-direct.
 
 ## 22. Safety Checklist
 

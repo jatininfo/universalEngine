@@ -17,6 +17,8 @@ public sealed class DhanMarketDataProvider(
 {
     private static readonly TimeSpan IndiaOffset = TimeSpan.FromHours(5.5);
     private readonly DhanMarketDataOptions _options = options.Value.Dhan;
+    private readonly SemaphoreSlim _throttleLock = new(1, 1);
+    private DateTimeOffset _lastRequestAtUtc = DateTimeOffset.MinValue;
 
     public async Task<IReadOnlyList<DailyBar>> GetDailyBarsAsync(
         IReadOnlyList<Instrument> instruments,
@@ -83,6 +85,7 @@ public sealed class DhanMarketDataProvider(
         {
             try
             {
+                await WaitForThrottleAsync(cancellationToken);
                 using var request = CreatePostRequest(path, payload);
                 using var response = await httpClient.SendAsync(request, cancellationToken);
                 if (!response.IsSuccessStatusCode)
@@ -252,6 +255,32 @@ public sealed class DhanMarketDataProvider(
     {
         var delayMs = Math.Max(0, _options.RetryBaseDelayMs) * attempt;
         return delayMs == 0 ? Task.CompletedTask : Task.Delay(delayMs, cancellationToken);
+    }
+
+    private async Task WaitForThrottleAsync(CancellationToken cancellationToken)
+    {
+        var delayMs = Math.Max(0, _options.RequestThrottleDelayMs);
+        if (delayMs == 0)
+        {
+            return;
+        }
+
+        await _throttleLock.WaitAsync(cancellationToken);
+        try
+        {
+            var elapsed = DateTimeOffset.UtcNow - _lastRequestAtUtc;
+            var remaining = TimeSpan.FromMilliseconds(delayMs) - elapsed;
+            if (remaining > TimeSpan.Zero)
+            {
+                await Task.Delay(remaining, cancellationToken);
+            }
+
+            _lastRequestAtUtc = DateTimeOffset.UtcNow;
+        }
+        finally
+        {
+            _throttleLock.Release();
+        }
     }
 
     private static bool IsTransient(HttpStatusCode statusCode) =>
