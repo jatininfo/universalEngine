@@ -7,23 +7,22 @@ namespace UniversalEngine.Infrastructure.Notifications;
 
 public sealed class TelegramNotificationSender(
     HttpClient httpClient,
-    IOptions<NotificationOptions> options) : INotificationSender
+    IOptionsMonitor<NotificationOptions> options) : INotificationSender
 {
-    private readonly TelegramNotificationOptions _options = options.Value.Telegram;
-
     public async Task SendAsync(string subject, string body, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(_options.BotToken) || string.IsNullOrWhiteSpace(_options.ChatId))
+        var telegramOptions = options.CurrentValue.Telegram;
+        if (string.IsNullOrWhiteSpace(telegramOptions.BotToken) || string.IsNullOrWhiteSpace(telegramOptions.ChatId))
         {
             throw new InvalidOperationException("Telegram notification requires Notifications:Telegram:BotToken and ChatId.");
         }
 
         var message = $"*{Escape(subject)}*{Environment.NewLine}{Escape(body)}";
-        var url = $"https://api.telegram.org/bot{_options.BotToken}/sendMessage";
+        var url = $"https://api.telegram.org/bot{telegramOptions.BotToken}/sendMessage";
 
         using var response = await httpClient.PostAsJsonAsync(url, new
         {
-            chat_id = _options.ChatId,
+            chat_id = telegramOptions.ChatId,
             text = message,
             parse_mode = "MarkdownV2"
         }, cancellationToken);

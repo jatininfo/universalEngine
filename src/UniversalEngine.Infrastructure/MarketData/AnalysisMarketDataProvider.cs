@@ -8,7 +8,7 @@ using UniversalEngine.Domain.Market;
 namespace UniversalEngine.Infrastructure.MarketData;
 
 public sealed class AnalysisMarketDataProvider(
-    IOptions<AnalysisDataOptions> analysisOptions,
+    IOptionsMonitor<AnalysisDataOptions> analysisOptions,
     CsvMarketDataProvider csvProvider,
     DhanMarketDataProvider dhanProvider,
     ConfiguredMarketDataProvider configuredProvider,
@@ -19,16 +19,15 @@ public sealed class AnalysisMarketDataProvider(
         WriteIndented = true
     };
 
-    private readonly AnalysisDataOptions _options = analysisOptions.Value;
-
     public async Task<IReadOnlyList<DailyBar>> GetDailyBarsAsync(
         IReadOnlyList<Instrument> instruments,
         DateOnly from,
         DateOnly to,
         CancellationToken cancellationToken)
     {
+        var options = analysisOptions.CurrentValue;
         var provider = ResolveProvider();
-        if (!_options.UseHistoricalCache || _options.PrimaryProvider == MarketDataProviderKind.Csv)
+        if (!options.UseHistoricalCache || options.PrimaryProvider == MarketDataProviderKind.Csv)
         {
             return await provider.GetDailyBarsAsync(instruments, from, to, cancellationToken);
         }
@@ -36,7 +35,7 @@ public sealed class AnalysisMarketDataProvider(
         var bars = new List<DailyBar>();
         foreach (var instrument in instruments)
         {
-            bars.AddRange(await GetCachedDailyBarsAsync(provider, instrument, from, to, cancellationToken));
+            bars.AddRange(await GetCachedDailyBarsAsync(options, provider, instrument, from, to, cancellationToken));
         }
 
         return bars;
@@ -56,6 +55,7 @@ public sealed class AnalysisMarketDataProvider(
     }
 
     private async Task<IReadOnlyList<DailyBar>> GetCachedDailyBarsAsync(
+        AnalysisDataOptions options,
         IMarketDataProvider provider,
         Instrument instrument,
         DateOnly from,
@@ -65,7 +65,7 @@ public sealed class AnalysisMarketDataProvider(
         var cache = await ReadCacheAsync(instrument, cancellationToken);
         if (cache is not null &&
             cache.Covers(from, to) &&
-            cache.IsFresh(_options.HistoricalCacheTtlHours))
+            cache.IsFresh(options.HistoricalCacheTtlHours))
         {
             return cache.ToDailyBars(instrument, from, to);
         }
@@ -80,7 +80,7 @@ public sealed class AnalysisMarketDataProvider(
         Instrument instrument,
         CancellationToken cancellationToken)
     {
-        var path = GetCachePath(instrument);
+        var path = GetCachePath(analysisOptions.CurrentValue, instrument);
         if (!File.Exists(path))
         {
             return null;
@@ -106,27 +106,27 @@ public sealed class AnalysisMarketDataProvider(
         DailyBarCacheDocument cache,
         CancellationToken cancellationToken)
     {
-        var path = GetCachePath(instrument);
+        var path = GetCachePath(analysisOptions.CurrentValue, instrument);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await using var stream = File.Create(path);
         await JsonSerializer.SerializeAsync(stream, cache, JsonOptions, cancellationToken);
     }
 
-    private string GetCachePath(Instrument instrument)
+    private static string GetCachePath(AnalysisDataOptions options, Instrument instrument)
     {
-        var root = string.IsNullOrWhiteSpace(_options.HistoricalCacheRoot)
+        var root = string.IsNullOrWhiteSpace(options.HistoricalCacheRoot)
             ? Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
                 "UniversalEngine",
                 "historical-cache")
-            : _options.HistoricalCacheRoot;
+            : options.HistoricalCacheRoot;
 
         var fileName = $"{instrument.Exchange}_{SanitizeFileName(instrument.Symbol)}_daily.json";
         return Path.Combine(root, fileName);
     }
 
     private IMarketDataProvider ResolveProvider() =>
-        _options.PrimaryProvider switch
+        analysisOptions.CurrentValue.PrimaryProvider switch
         {
             MarketDataProviderKind.Csv => csvProvider,
             MarketDataProviderKind.Dhan => dhanProvider,

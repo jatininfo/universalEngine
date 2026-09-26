@@ -5,10 +5,8 @@ using UniversalEngine.Domain.Market;
 
 namespace UniversalEngine.Infrastructure.MarketData;
 
-public sealed class ConfiguredMarketDataProvider(IOptions<MarketDataOptions> options) : IMarketDataProvider
+public sealed class ConfiguredMarketDataProvider(IOptionsMonitor<MarketDataOptions> options) : IMarketDataProvider
 {
-    private readonly MarketDataOptions _options = options.Value;
-
     public Task<IReadOnlyList<DailyBar>> GetDailyBarsAsync(
         IReadOnlyList<Instrument> instruments,
         DateOnly from,
@@ -30,6 +28,6 @@ public sealed class ConfiguredMarketDataProvider(IOptions<MarketDataOptions> opt
     }
 
     private string CreateNotConfiguredMessage() =>
-        $"Market data provider '{_options.PrimaryProvider}' is selected but no live adapter is configured yet. " +
+        $"Market data provider '{options.CurrentValue.PrimaryProvider}' is selected but no live adapter is configured yet. " +
         "MVP implementation should add Dhan first, with Zerodha and Groww behind the same interface.";
 }

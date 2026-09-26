@@ -19,6 +19,7 @@ public sealed record ScannerUniverseDefinition(
     bool Enabled,
     int InstrumentCount,
     IReadOnlyList<string> BasketNames,
+    IReadOnlyList<ScannerInstrumentDefinition> DirectInstruments,
     IReadOnlyList<ScannerInstrumentDefinition> Instruments);
 
 public sealed record ScannerUniverseState(

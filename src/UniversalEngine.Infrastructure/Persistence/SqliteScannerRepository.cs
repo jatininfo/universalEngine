@@ -140,9 +140,9 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
                 ("$enabled", universe.Enabled ? 1 : 0),
                 ("$updatedAtUtc", NowText()));
 
-            for (var index = 0; index < universe.Instruments.Count; index++)
+            for (var index = 0; index < universe.DirectInstruments.Count; index++)
             {
-                var instrument = universe.Instruments[index];
+                var instrument = universe.DirectInstruments[index];
                 await ExecuteAsync(
                     connection,
                     """
@@ -1444,6 +1444,7 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
                 reader.GetInt32(1) == 1,
                 expanded.Length,
                 basketNames,
+                directInstruments,
                 expanded));
         }
 
@@ -1461,6 +1462,7 @@ public sealed class SqliteScannerRepository(IOptions<PersistenceOptions> options
                 true,
                 defaultInstruments.Length,
                 baskets.Where(basket => basket.Enabled).Select(basket => basket.Name).ToArray(),
+                baseInstruments,
                 defaultInstruments));
         }
 

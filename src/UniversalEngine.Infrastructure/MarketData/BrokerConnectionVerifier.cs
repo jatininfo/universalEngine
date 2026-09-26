@@ -8,26 +8,25 @@ namespace UniversalEngine.Infrastructure.MarketData;
 
 public sealed class BrokerConnectionVerifier(
     IHttpClientFactory httpClientFactory,
-    IOptions<MarketDataOptions> options) : IBrokerConnectionVerifier
+    IOptionsMonitor<MarketDataOptions> options) : IBrokerConnectionVerifier
 {
-    private readonly MarketDataOptions _options = options.Value;
-
     public async Task<IReadOnlyList<BrokerConnectionStatus>> GetStatusesAsync(CancellationToken cancellationToken)
     {
+        var currentOptions = options.CurrentValue;
         var statuses = new List<BrokerConnectionStatus>
         {
-            await CheckDhanAsync(cancellationToken),
-            Placeholder("Zerodha", HasZerodhaCredentials(), "Configured provider slot; live adapter is not implemented yet."),
-            Placeholder("Groww", HasGrowwCredentials(), "Configured provider slot; live adapter is not implemented yet.")
+            await CheckDhanAsync(currentOptions, cancellationToken),
+            Placeholder("Zerodha", HasZerodhaCredentials(currentOptions), "Configured provider slot; live adapter is not implemented yet."),
+            Placeholder("Groww", HasGrowwCredentials(currentOptions), "Configured provider slot; live adapter is not implemented yet.")
         };
 
         return statuses;
     }
 
-    private async Task<BrokerConnectionStatus> CheckDhanAsync(CancellationToken cancellationToken)
+    private async Task<BrokerConnectionStatus> CheckDhanAsync(MarketDataOptions options, CancellationToken cancellationToken)
     {
         var checkedAt = DateTimeOffset.UtcNow;
-        var accessToken = _options.Dhan.GetAccessToken();
+        var accessToken = options.Dhan.GetAccessToken();
         var isConfigured = !string.IsNullOrWhiteSpace(accessToken);
         if (!isConfigured)
         {
@@ -37,12 +36,12 @@ public sealed class BrokerConnectionVerifier(
         try
         {
             var httpClient = httpClientFactory.CreateClient(nameof(BrokerConnectionVerifier));
-            httpClient.BaseAddress = new Uri(_options.Dhan.BaseUrl);
+            httpClient.BaseAddress = new Uri(options.Dhan.BaseUrl);
             httpClient.Timeout = TimeSpan.FromSeconds(20);
             httpClient.DefaultRequestHeaders.TryAddWithoutValidation("access-token", accessToken);
-            if (!string.IsNullOrWhiteSpace(_options.Dhan.ClientId))
+            if (!string.IsNullOrWhiteSpace(options.Dhan.ClientId))
             {
-                httpClient.DefaultRequestHeaders.TryAddWithoutValidation("client-id", _options.Dhan.ClientId);
+                httpClient.DefaultRequestHeaders.TryAddWithoutValidation("client-id", options.Dhan.ClientId);
             }
 
             using var profile = await httpClient.GetAsync("profile", cancellationToken);
@@ -66,13 +65,13 @@ public sealed class BrokerConnectionVerifier(
             message,
             DateTimeOffset.UtcNow);
 
-    private bool HasZerodhaCredentials() =>
-        !string.IsNullOrWhiteSpace(_options.Zerodha.ApiKey) ||
-        !string.IsNullOrWhiteSpace(_options.Zerodha.AccessToken) ||
-        !string.IsNullOrWhiteSpace(_options.Zerodha.ClientId);
+    private static bool HasZerodhaCredentials(MarketDataOptions options) =>
+        !string.IsNullOrWhiteSpace(options.Zerodha.ApiKey) ||
+        !string.IsNullOrWhiteSpace(options.Zerodha.AccessToken) ||
+        !string.IsNullOrWhiteSpace(options.Zerodha.ClientId);
 
-    private bool HasGrowwCredentials() =>
-        !string.IsNullOrWhiteSpace(_options.Groww.ApiKey) ||
-        !string.IsNullOrWhiteSpace(_options.Groww.AccessToken) ||
-        !string.IsNullOrWhiteSpace(_options.Groww.ClientId);
+    private static bool HasGrowwCredentials(MarketDataOptions options) =>
+        !string.IsNullOrWhiteSpace(options.Groww.ApiKey) ||
+        !string.IsNullOrWhiteSpace(options.Groww.AccessToken) ||
+        !string.IsNullOrWhiteSpace(options.Groww.ClientId);
 }

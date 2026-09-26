@@ -12,11 +12,10 @@ namespace UniversalEngine.Infrastructure.MarketData;
 
 public sealed class DhanMarketDataProvider(
     HttpClient httpClient,
-    IOptions<MarketDataOptions> options,
+    IOptionsMonitor<MarketDataOptions> options,
     ILogger<DhanMarketDataProvider> logger) : IMarketDataProvider
 {
     private static readonly TimeSpan IndiaOffset = TimeSpan.FromHours(5.5);
-    private readonly DhanMarketDataOptions _options = options.Value.Dhan;
     private readonly SemaphoreSlim _throttleLock = new(1, 1);
     private DateTimeOffset _lastRequestAtUtc = DateTimeOffset.MinValue;
 
@@ -26,7 +25,8 @@ public sealed class DhanMarketDataProvider(
         DateOnly to,
         CancellationToken cancellationToken)
     {
-        EnsureConfigured();
+        var dhanOptions = options.CurrentValue.Dhan;
+        EnsureConfigured(dhanOptions);
 
         var bars = new List<DailyBar>();
         foreach (var instrument in instruments)
@@ -36,13 +36,13 @@ public sealed class DhanMarketDataProvider(
             var request = new DhanHistoricalRequest(
                 instrument.SecurityId!,
                 ToExchangeSegment(instrument.Exchange),
-                _options.InstrumentType,
+                dhanOptions.InstrumentType,
                 ExpiryCode: 0,
-                Oi: _options.IncludeOpenInterest,
+                Oi: dhanOptions.IncludeOpenInterest,
                 FromDate: from.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 ToDate: to.AddDays(1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
 
-            var response = await PostAsync<DhanHistoricalResponse>("charts/historical", request, cancellationToken);
+            var response = await PostAsync<DhanHistoricalResponse>(dhanOptions, "charts/historical", request, cancellationToken);
             bars.AddRange(MapDailyBars(instrument, response));
         }
 
@@ -57,36 +57,38 @@ public sealed class DhanMarketDataProvider(
         BarInterval interval,
         CancellationToken cancellationToken)
     {
-        EnsureConfigured();
+        var dhanOptions = options.CurrentValue.Dhan;
+        EnsureConfigured(dhanOptions);
         EnsureInstrumentConfigured(instrument);
 
         var request = new DhanIntradayRequest(
             instrument.SecurityId!,
             ToExchangeSegment(instrument.Exchange),
-            _options.InstrumentType,
+            dhanOptions.InstrumentType,
             ToDhanInterval(interval),
-            _options.IncludeOpenInterest,
+            dhanOptions.IncludeOpenInterest,
             $"{date:yyyy-MM-dd} {from:HH:mm:ss}",
             $"{date:yyyy-MM-dd} {to:HH:mm:ss}");
 
-        var response = await PostAsync<DhanHistoricalResponse>("charts/intraday", request, cancellationToken);
+        var response = await PostAsync<DhanHistoricalResponse>(dhanOptions, "charts/intraday", request, cancellationToken);
         return MapIntradayBars(instrument, date, interval, response);
     }
 
     private async Task<TResponse> PostAsync<TResponse>(
+        DhanMarketDataOptions dhanOptions,
         string path,
         object payload,
         CancellationToken cancellationToken)
     {
-        var maxAttempts = Math.Max(1, _options.RetryCount + 1);
+        var maxAttempts = Math.Max(1, dhanOptions.RetryCount + 1);
         Exception? lastException = null;
 
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             try
             {
-                await WaitForThrottleAsync(cancellationToken);
-                using var request = CreatePostRequest(path, payload);
+                await WaitForThrottleAsync(dhanOptions, cancellationToken);
+                using var request = CreatePostRequest(dhanOptions, path, payload);
                 using var response = await httpClient.SendAsync(request, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
@@ -101,7 +103,7 @@ public sealed class DhanMarketDataProvider(
 
                     if (attempt < maxAttempts && IsTransient(response.StatusCode))
                     {
-                        await DelayBeforeRetryAsync(attempt, cancellationToken);
+                        await DelayBeforeRetryAsync(dhanOptions, attempt, cancellationToken);
                         continue;
                     }
 
@@ -121,7 +123,7 @@ public sealed class DhanMarketDataProvider(
                     path,
                     attempt,
                     maxAttempts);
-                await DelayBeforeRetryAsync(attempt, cancellationToken);
+                await DelayBeforeRetryAsync(dhanOptions, attempt, cancellationToken);
             }
         }
 
@@ -130,16 +132,16 @@ public sealed class DhanMarketDataProvider(
             lastException);
     }
 
-    private HttpRequestMessage CreatePostRequest(string path, object payload)
+    private static HttpRequestMessage CreatePostRequest(DhanMarketDataOptions dhanOptions, string path, object payload)
     {
-        var request = new HttpRequestMessage(HttpMethod.Post, path)
+        var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(dhanOptions.BaseUrl, UriKind.Absolute), path))
         {
             Content = JsonContent.Create(payload)
         };
-        request.Headers.TryAddWithoutValidation("access-token", _options.GetAccessToken());
-        if (!string.IsNullOrWhiteSpace(_options.ClientId))
+        request.Headers.TryAddWithoutValidation("access-token", dhanOptions.GetAccessToken());
+        if (!string.IsNullOrWhiteSpace(dhanOptions.ClientId))
         {
-            request.Headers.TryAddWithoutValidation("client-id", _options.ClientId);
+            request.Headers.TryAddWithoutValidation("client-id", dhanOptions.ClientId);
         }
 
         return request;
@@ -209,9 +211,9 @@ public sealed class DhanMarketDataProvider(
         }
     }
 
-    private void EnsureConfigured()
+    private static void EnsureConfigured(DhanMarketDataOptions options)
     {
-        if (string.IsNullOrWhiteSpace(_options.GetAccessToken()))
+        if (string.IsNullOrWhiteSpace(options.GetAccessToken()))
         {
             throw new InvalidOperationException(
                 "Dhan access token is missing. Set MarketData:Dhan:AccessToken or DHAN_ACCESS_TOKEN.");
@@ -251,15 +253,15 @@ public sealed class DhanMarketDataProvider(
     private static long ToVolume(decimal value) =>
         (long)decimal.Truncate(value);
 
-    private Task DelayBeforeRetryAsync(int attempt, CancellationToken cancellationToken)
+    private static Task DelayBeforeRetryAsync(DhanMarketDataOptions options, int attempt, CancellationToken cancellationToken)
     {
-        var delayMs = Math.Max(0, _options.RetryBaseDelayMs) * attempt;
+        var delayMs = Math.Max(0, options.RetryBaseDelayMs) * attempt;
         return delayMs == 0 ? Task.CompletedTask : Task.Delay(delayMs, cancellationToken);
     }
 
-    private async Task WaitForThrottleAsync(CancellationToken cancellationToken)
+    private async Task WaitForThrottleAsync(DhanMarketDataOptions options, CancellationToken cancellationToken)
     {
-        var delayMs = Math.Max(0, _options.RequestThrottleDelayMs);
+        var delayMs = Math.Max(0, options.RequestThrottleDelayMs);
         if (delayMs == 0)
         {
             return;

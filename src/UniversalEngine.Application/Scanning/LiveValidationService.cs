@@ -45,7 +45,8 @@ public sealed class LiveValidationService(
                 Reject(candidate, "No intraday bars were available for live validation.", DecisionReasonCode.MissingIntradayData));
         }
 
-        var latestBar = bars.OrderBy(bar => bar.Timestamp).Last();
+        var orderedBars = bars.OrderBy(bar => bar.Timestamp).ToArray();
+        var latestBar = orderedBars[^1];
         var now = DateTimeOffset.Now.ToOffset(latestBar.Timestamp.Offset);
         if (request.SessionDate == DateOnly.FromDateTime(now.DateTime) &&
             now - latestBar.Timestamp > TimeSpan.FromMinutes(_options.MaxIntradayDataAgeMinutes))
@@ -57,18 +58,27 @@ public sealed class LiveValidationService(
 
         var buffer = candidate.Instrument.TickSize * _options.ConfirmationBufferTicks;
         var entry = candidate.EntryPrice.Value;
-        var confirmed = candidate.Direction switch
+        var triggerPrice = candidate.Direction switch
         {
-            CandidateDirection.Long => latestBar.Close >= entry + buffer,
-            CandidateDirection.Short => latestBar.Close <= entry - buffer,
-            _ => false
+            CandidateDirection.Long => entry + buffer,
+            CandidateDirection.Short => entry - buffer,
+            _ => entry
+        };
+        var confirmingBar = candidate.Direction switch
+        {
+            CandidateDirection.Long => orderedBars.FirstOrDefault(bar => bar.High >= triggerPrice),
+            CandidateDirection.Short => orderedBars.FirstOrDefault(bar => bar.Low <= triggerPrice),
+            _ => null
         };
 
-        if (!confirmed)
+        if (confirmingBar is null)
         {
+            var bestPrice = candidate.Direction == CandidateDirection.Long
+                ? orderedBars.Max(bar => bar.High)
+                : orderedBars.Min(bar => bar.Low);
             return new LiveValidationResult(
                 request.SessionDate,
-                Reject(candidate, $"Latest close {latestBar.Close:0.##} did not confirm entry {entry:0.##}."));
+                Reject(candidate, $"No candle in the validation window traded through entry {entry:0.##}. Best price was {bestPrice:0.##}."));
         }
 
         return new LiveValidationResult(
@@ -78,7 +88,7 @@ public sealed class LiveValidationService(
                 Reasons =
                 [
                     .. candidate.Reasons,
-                    new DecisionReason(DecisionReasonCode.LiveValidationConfirmed, "Latest intraday candle confirmed the configured entry.")
+                    new DecisionReason(DecisionReasonCode.LiveValidationConfirmed, $"Intraday candle at {confirmingBar.Timestamp:HH:mm} traded through the configured entry.")
                 ]
             });
     }
