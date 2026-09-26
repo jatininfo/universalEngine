@@ -6,30 +6,29 @@ using UniversalEngine.Application.Configuration;
 
 namespace UniversalEngine.Infrastructure.Notifications;
 
-public sealed class EmailNotificationSender(IOptions<NotificationOptions> options) : INotificationSender
+public sealed class EmailNotificationSender(IOptionsMonitor<NotificationOptions> options) : INotificationSender
 {
-    private readonly EmailNotificationOptions _options = options.Value.Email;
-
     public async Task SendAsync(string subject, string body, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(_options.SmtpHost) ||
-            string.IsNullOrWhiteSpace(_options.From) ||
-            string.IsNullOrWhiteSpace(_options.To))
+        var emailOptions = options.CurrentValue.Email;
+        if (string.IsNullOrWhiteSpace(emailOptions.SmtpHost) ||
+            string.IsNullOrWhiteSpace(emailOptions.From) ||
+            string.IsNullOrWhiteSpace(emailOptions.To))
         {
             throw new InvalidOperationException("Email notification requires SmtpHost, From, and To.");
         }
 
-        using var client = new SmtpClient(_options.SmtpHost, _options.SmtpPort)
+        using var client = new SmtpClient(emailOptions.SmtpHost, emailOptions.SmtpPort)
         {
-            EnableSsl = _options.UseSsl
+            EnableSsl = emailOptions.UseSsl
         };
 
-        if (!string.IsNullOrWhiteSpace(_options.Username))
+        if (!string.IsNullOrWhiteSpace(emailOptions.Username))
         {
-            client.Credentials = new NetworkCredential(_options.Username, _options.Password);
+            client.Credentials = new NetworkCredential(emailOptions.Username, emailOptions.Password);
         }
 
-        using var message = new MailMessage(_options.From, _options.To, subject, body);
+        using var message = new MailMessage(emailOptions.From, emailOptions.To, subject, body);
         await client.SendMailAsync(message, cancellationToken);
     }
 }

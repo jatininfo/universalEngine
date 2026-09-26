@@ -6,10 +6,8 @@ using UniversalEngine.Domain.Market;
 
 namespace UniversalEngine.Infrastructure.MarketData;
 
-public sealed class CsvMarketDataProvider(IOptions<MarketDataOptions> options) : IMarketDataProvider
+public sealed class CsvMarketDataProvider(IOptionsMonitor<MarketDataOptions> options) : IMarketDataProvider
 {
-    private readonly string _dataRoot = options.Value.CsvDataRoot ?? "tests/fixtures/market-data";
-
     public async Task<IReadOnlyList<DailyBar>> GetDailyBarsAsync(
         IReadOnlyList<Instrument> instruments,
         DateOnly from,
@@ -17,7 +15,8 @@ public sealed class CsvMarketDataProvider(IOptions<MarketDataOptions> options) :
         CancellationToken cancellationToken)
     {
         var instrumentKeys = instruments.Select(instrument => instrument.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var path = Path.Combine(_dataRoot, "daily", "daily-bars.csv");
+        var dataRoot = options.CurrentValue.CsvDataRoot ?? "tests/fixtures/market-data";
+        var path = Path.Combine(dataRoot, "daily", "daily-bars.csv");
 
         if (!File.Exists(path))
         {

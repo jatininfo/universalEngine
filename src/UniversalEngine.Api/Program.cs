@@ -72,7 +72,11 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("DashboardDevelopment", policy =>
         policy
-            .WithOrigins("http://localhost:5173", "http://127.0.0.1:5173")
+            .WithOrigins(
+                "http://localhost:5173",
+                "http://127.0.0.1:5173",
+                "http://localhost:7089",
+                "http://127.0.0.1:7089")
             .AllowAnyHeader()
             .AllowAnyMethod());
 });
@@ -133,11 +137,11 @@ app.MapGet("/broker/status", async (
 });
 
 app.MapGet("/settings/data-sources", (
-    Microsoft.Extensions.Options.IOptions<MarketDataOptions> marketDataOptions,
-    Microsoft.Extensions.Options.IOptions<AnalysisDataOptions> analysisDataOptions) =>
+    Microsoft.Extensions.Options.IOptionsMonitor<MarketDataOptions> marketDataOptions,
+    Microsoft.Extensions.Options.IOptionsMonitor<AnalysisDataOptions> analysisDataOptions) =>
 {
-    var marketData = marketDataOptions.Value;
-    var analysisData = analysisDataOptions.Value;
+    var marketData = marketDataOptions.CurrentValue;
+    var analysisData = analysisDataOptions.CurrentValue;
     var resolvedCacheRoot = ResolveHistoricalCacheRoot(analysisData);
     var cacheEntryCount = Directory.Exists(resolvedCacheRoot)
         ? Directory.EnumerateFiles(resolvedCacheRoot, "*_daily.json").Count()
@@ -154,13 +158,29 @@ app.MapGet("/settings/data-sources", (
 });
 
 app.MapGet("/settings/application", (
-    Microsoft.Extensions.Options.IOptions<RiskOptions> riskOptions,
-    Microsoft.Extensions.Options.IOptions<EodScannerOptions> eodOptions,
-    Microsoft.Extensions.Options.IOptions<AnalysisDataOptions> analysisOptions) =>
+    Microsoft.Extensions.Options.IOptionsMonitor<RiskOptions> riskOptions,
+    Microsoft.Extensions.Options.IOptionsMonitor<EodScannerOptions> eodOptions,
+    Microsoft.Extensions.Options.IOptionsMonitor<AnalysisDataOptions> analysisOptions,
+    Microsoft.Extensions.Options.IOptionsMonitor<MarketDataOptions> marketDataOptions,
+    Microsoft.Extensions.Options.IOptionsMonitor<PreMarketOptions> preMarketOptions,
+    Microsoft.Extensions.Options.IOptionsMonitor<OpeningRangeOptions> openingRangeOptions,
+    Microsoft.Extensions.Options.IOptionsMonitor<LiveValidationOptions> liveValidationOptions,
+    Microsoft.Extensions.Options.IOptionsMonitor<MonitoringOptions> monitoringOptions,
+    Microsoft.Extensions.Options.IOptionsMonitor<BacktestOptions> backtestOptions,
+    Microsoft.Extensions.Options.IOptionsMonitor<AiAnalysisOptions> aiOptions,
+    Microsoft.Extensions.Options.IOptionsMonitor<NotificationOptions> notificationOptions) =>
 {
-    var risk = riskOptions.Value;
-    var eod = eodOptions.Value;
-    var analysis = analysisOptions.Value;
+    var risk = riskOptions.CurrentValue;
+    var eod = eodOptions.CurrentValue;
+    var analysis = analysisOptions.CurrentValue;
+    var marketData = marketDataOptions.CurrentValue;
+    var preMarket = preMarketOptions.CurrentValue;
+    var openingRange = openingRangeOptions.CurrentValue;
+    var liveValidation = liveValidationOptions.CurrentValue;
+    var monitoring = monitoringOptions.CurrentValue;
+    var backtest = backtestOptions.CurrentValue;
+    var ai = aiOptions.CurrentValue;
+    var notifications = notificationOptions.CurrentValue;
     return Results.Ok(new ApplicationSettingsResponse(
         new RiskSettingsResponse(
             risk.CapitalAmount,
@@ -182,7 +202,81 @@ app.MapGet("/settings/application", (
             analysis.PrimaryProvider.ToString(),
             analysis.UseHistoricalCache,
             analysis.HistoricalCacheTtlHours),
-        "Credentials are intentionally excluded. Saved setting changes are written to local config and may require an app restart for long-lived services."));
+        new BrokerSettingsResponse(
+            marketData.PrimaryProvider.ToString(),
+            new DhanBrokerSettingsResponse(
+                marketData.Dhan.BaseUrl,
+                marketData.Dhan.ClientId ?? string.Empty,
+                MaskSecret(marketData.Dhan.GetAccessToken()),
+                string.Empty,
+                marketData.Dhan.InstrumentType,
+                marketData.Dhan.IncludeOpenInterest,
+                marketData.Dhan.RetryCount,
+                marketData.Dhan.RetryBaseDelayMs,
+                marketData.Dhan.RequestThrottleDelayMs)),
+        new StageSettingsResponse(
+            new PreMarketSettingsResponse(
+                preMarket.Enabled,
+                preMarket.EnableScheduledScan,
+                preMarket.RunTimeLocal,
+                preMarket.MaxAllowedGapPercent,
+                preMarket.AllowWhenPreMarketDataUnavailable),
+            new OpeningRangeSettingsResponse(
+                openingRange.Enabled,
+                openingRange.EnableScheduledScan,
+                openingRange.RangeMinutes,
+                openingRange.Interval.ToString(),
+                openingRange.MarketOpenTime,
+                openingRange.BreakoutBufferTicks,
+                openingRange.TargetRiskRewardRatio,
+                openingRange.MaxIntradayDataAgeMinutes),
+            new LiveValidationSettingsResponse(
+                liveValidation.Enabled,
+                liveValidation.EnableScheduledScan,
+                liveValidation.Interval.ToString(),
+                liveValidation.StartTime,
+                liveValidation.EndTime,
+                liveValidation.PollMinutes,
+                liveValidation.ConfirmationBufferTicks,
+                liveValidation.MaxIntradayDataAgeMinutes),
+            new MonitoringSettingsResponse(
+                monitoring.Enabled,
+                monitoring.EnableScheduledScan,
+                monitoring.Interval.ToString(),
+                monitoring.StartTime,
+                monitoring.EndTime,
+                monitoring.PollMinutes,
+                monitoring.MaxIntradayDataAgeMinutes)),
+        new BacktestSettingsResponse(
+            backtest.FromDate,
+            backtest.ToDate,
+            backtest.MaxHoldingDays,
+            backtest.UseStopTargetSimulation,
+            backtest.TargetRiskRewardRatio,
+            backtest.AssumeStopBeforeTargetWhenBothTouched),
+        new AiSettingsResponse(
+            ai.Enabled,
+            ai.Provider,
+            ai.PromptVersion,
+            ai.MinimumTradeProbability),
+        new NotificationSettingsResponse(
+            notifications.Channel.ToString(),
+            notifications.SendEodWatchlistNotifications,
+            notifications.MinimumEodScoreToNotify,
+            new TelegramSettingsResponse(
+                MaskSecret(notifications.Telegram.BotToken),
+                string.Empty,
+                notifications.Telegram.ChatId ?? string.Empty),
+            new EmailSettingsResponse(
+                notifications.Email.SmtpHost ?? string.Empty,
+                notifications.Email.SmtpPort,
+                notifications.Email.UseSsl,
+                notifications.Email.Username ?? string.Empty,
+                MaskSecret(notifications.Email.Password),
+                string.Empty,
+                notifications.Email.From ?? string.Empty,
+                notifications.Email.To ?? string.Empty)),
+        "Broker credentials are write-only: existing access tokens are shown only as masked status. Saved setting changes apply to API runtime immediately; worker processes still need their own reload/restart."));
 });
 
 app.MapPut("/settings/application", async (
@@ -224,24 +318,80 @@ app.MapPut("/settings/application", async (
         return Results.BadRequest(new { message = "Historical cache TTL cannot be negative." });
     }
 
-    await SaveApplicationSettingsAsync(workerLocalConfigPath, request, provider, cancellationToken);
+    if (!Enum.TryParse<MarketDataProviderKind>(request.Broker.PrimaryProvider, ignoreCase: true, out var brokerProvider) ||
+        brokerProvider is not (MarketDataProviderKind.Dhan or MarketDataProviderKind.Zerodha or MarketDataProviderKind.Groww or MarketDataProviderKind.Csv))
+    {
+        return Results.BadRequest(new { message = "Broker provider must be Dhan, Zerodha, Groww, or Csv." });
+    }
+
+    if (string.IsNullOrWhiteSpace(request.Broker.Dhan.BaseUrl) ||
+        string.IsNullOrWhiteSpace(request.Broker.Dhan.InstrumentType) ||
+        request.Broker.Dhan.RetryCount < 0 ||
+        request.Broker.Dhan.RetryBaseDelayMs < 0 ||
+        request.Broker.Dhan.RequestThrottleDelayMs < 0)
+    {
+        return Results.BadRequest(new { message = "Dhan broker settings are invalid." });
+    }
+
+    if (request.Stages.PreMarket.MaxAllowedGapPercent < 0 ||
+        request.Stages.OpeningRange.RangeMinutes < 1 ||
+        request.Stages.OpeningRange.BreakoutBufferTicks < 0 ||
+        request.Stages.OpeningRange.TargetRiskRewardRatio <= 0 ||
+        request.Stages.OpeningRange.MaxIntradayDataAgeMinutes < 1 ||
+        request.Stages.LiveValidation.PollMinutes < 1 ||
+        request.Stages.LiveValidation.ConfirmationBufferTicks < 0 ||
+        request.Stages.LiveValidation.MaxIntradayDataAgeMinutes < 1 ||
+        request.Stages.Monitoring.PollMinutes < 1 ||
+        request.Stages.Monitoring.MaxIntradayDataAgeMinutes < 1)
+    {
+        return Results.BadRequest(new { message = "Pipeline stage settings are invalid." });
+    }
+
+    if (!Enum.TryParse<BarInterval>(request.Stages.OpeningRange.Interval, ignoreCase: true, out var openingInterval) ||
+        !Enum.TryParse<BarInterval>(request.Stages.LiveValidation.Interval, ignoreCase: true, out var liveInterval) ||
+        !Enum.TryParse<BarInterval>(request.Stages.Monitoring.Interval, ignoreCase: true, out var monitoringInterval))
+    {
+        return Results.BadRequest(new { message = "Stage interval must be OneMinute, FiveMinutes, or FifteenMinutes." });
+    }
+
+    if (request.Backtest.MaxHoldingDays < 1 ||
+        request.Backtest.TargetRiskRewardRatio <= 0 ||
+        request.Ai.MinimumTradeProbability < 0 ||
+        request.Ai.MinimumTradeProbability > 100 ||
+        request.Notifications.MinimumEodScoreToNotify < 0 ||
+        request.Notifications.Telegram is null ||
+        request.Notifications.Email is null ||
+        request.Notifications.Email.SmtpPort < 1)
+    {
+        return Results.BadRequest(new { message = "Backtest, AI, or notification settings are invalid." });
+    }
+
+    if (!Enum.TryParse<NotificationChannel>(request.Notifications.Channel, ignoreCase: true, out var notificationChannel))
+    {
+        return Results.BadRequest(new { message = "Notification channel must be Console, Telegram, or Email." });
+    }
+
+    await SaveApplicationSettingsAsync(workerLocalConfigPath, request, provider, brokerProvider, cancellationToken);
+    builder.Configuration.Reload();
     return Results.Ok(new
     {
-        message = "Settings saved to local config. Restart API/worker to guarantee all long-lived services use the new values.",
-        requiresRestart = true
+        message = "Settings saved to local config and applied to the API runtime.",
+        requiresRestart = false
     });
 });
 
 app.MapGet("/pipeline/status", async (
     string? sessionDate,
+    string? universeName,
     string? basketName,
     string? instrumentKey,
     IScannerRepository repository,
+    IInstrumentUniverseRepository universeRepository,
     Microsoft.Extensions.Options.IOptions<ScannerRunOptions> scannerOptions,
     CancellationToken cancellationToken) =>
 {
     var options = scannerOptions.Value;
-    var universe = ResolveScannerUniverse(options, basketName, instrumentKey);
+    var universe = await ResolveScannerUniverseAsync(universeRepository, options, universeName, basketName, instrumentKey, cancellationToken);
     if (universe.Error is not null)
     {
         return Results.BadRequest(new { message = universe.Error });
@@ -249,7 +399,12 @@ app.MapGet("/pipeline/status", async (
 
     var instruments = universe.Instruments;
     var date = ParseSessionDate(sessionDate, DateOnly.FromDateTime(DateTime.Today));
-    var duplicateInstrumentKeys = options.GetDuplicateInstrumentKeys();
+    var duplicateInstrumentKeys = instruments
+        .GroupBy(instrument => instrument.Key)
+        .Where(group => group.Count() > 1)
+        .Select(group => group.Key)
+        .OrderBy(key => key)
+        .ToArray();
 
     if (instruments.Count == 0)
     {
@@ -291,7 +446,7 @@ app.MapGet("/pipeline/status", async (
         date,
         instruments.Count,
         duplicateInstrumentKeys,
-        duplicateInstrumentKeys.Count == 0
+        duplicateInstrumentKeys.Length == 0
             ? "Pre-market, opening, live validation, and monitor depend on accepted candidates from earlier stages. No orders are placed by these runs."
             : "Pre-market, opening, live validation, and monitor depend on accepted candidates from earlier stages. Duplicate instrument config keys were detected and only the first entry for each key is used for candidate loading.",
         [
@@ -350,6 +505,7 @@ app.MapGet("/scanner/instruments", async (
             universe.Enabled,
             universe.InstrumentCount,
             universe.BasketNames,
+            universe.DirectInstruments.Select(ToScannerInstrumentResponse).ToArray(),
             universe.Instruments.Select(ToScannerInstrumentResponse).ToArray())).ToArray(),
         instruments.Select(ToScannerInstrumentResponse).ToArray()));
 });
@@ -433,6 +589,77 @@ app.MapPut("/scanner/baskets", async (
     return Results.Ok(new { message = "Scanner baskets saved to database.", count = cleaned.Sum(basket => basket.Instruments.Count) });
 });
 
+app.MapPost("/scanner/baskets/predefined", async (
+    IInstrumentUniverseRepository universeRepository,
+    IInstrumentMasterProvider instrumentMasterProvider,
+    Microsoft.Extensions.Options.IOptions<ScannerRunOptions> scannerOptions,
+    CancellationToken cancellationToken) =>
+{
+    var state = await GetScannerStateAsync(universeRepository, scannerOptions.Value, cancellationToken);
+    var existingByName = state.Baskets.ToDictionary(basket => basket.Name, StringComparer.OrdinalIgnoreCase);
+    var predefined = new[]
+    {
+        new PredefinedBasketSeed("Nifty 50 Core", 50, ["RELIANCE", "HDFCBANK", "ICICIBANK", "INFY", "TCS", "LT", "ITC", "SBIN", "AXISBANK", "KOTAKBANK"]),
+        new PredefinedBasketSeed("Bank Nifty Core", 15, ["HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK", "KOTAKBANK", "INDUSINDBK", "BANKBARODA", "FEDERALBNK", "PNB", "IDFCFIRSTB"]),
+        new PredefinedBasketSeed("Nifty IT Core", 15, ["TCS", "INFY", "HCLTECH", "WIPRO", "TECHM", "LTIM", "MPHASIS", "PERSISTENT", "COFORGE"])
+    };
+
+    var seeded = new List<ScannerBasketDefinition>();
+    foreach (var basket in predefined)
+    {
+        if (existingByName.ContainsKey(basket.Name))
+        {
+            continue;
+        }
+
+        var instruments = new List<ScannerInstrumentDefinition>();
+        foreach (var symbol in basket.Symbols)
+        {
+            var match = (await instrumentMasterProvider.SearchAsync(symbol, "NSE", cancellationToken))
+                .FirstOrDefault(result => string.Equals(result.Symbol, symbol, StringComparison.OrdinalIgnoreCase));
+            if (match is not null)
+            {
+                instruments.Add(ToScannerInstrumentDefinitionFromLookup(match));
+            }
+        }
+
+        seeded.Add(new ScannerBasketDefinition(
+            basket.Name,
+            true,
+            basket.MaxSymbols,
+            instruments.Count,
+            instruments));
+    }
+
+    var nextBaskets = state.Baskets.Concat(seeded).ToArray();
+    await universeRepository.SaveScannerBasketsAsync(nextBaskets, cancellationToken);
+    var predefinedBasketNames = predefined
+        .Select(basket => basket.Name)
+        .Where(name => nextBaskets.Any(basket => string.Equals(basket.Name, name, StringComparison.OrdinalIgnoreCase)))
+        .ToArray();
+    var createdUniverse = false;
+    if (predefinedBasketNames.Length > 0 &&
+        !state.Universes.Any(universe => string.Equals(universe.Name, "Predefined Core Universe", StringComparison.OrdinalIgnoreCase)))
+    {
+        var universeInstruments = nextBaskets
+            .Where(basket => predefinedBasketNames.Contains(basket.Name, StringComparer.OrdinalIgnoreCase))
+            .SelectMany(basket => basket.Instruments.Take(basket.MaxSymbols <= 0 ? int.MaxValue : basket.MaxSymbols))
+            .DistinctBy(instrument => instrument.Key)
+            .ToArray();
+        var defaultUniverse = new ScannerUniverseDefinition(
+            "Predefined Core Universe",
+            true,
+            universeInstruments.Length,
+            predefinedBasketNames,
+            [],
+            universeInstruments);
+        await universeRepository.SaveScannerUniversesAsync(state.Universes.Concat([defaultUniverse]).ToArray(), cancellationToken);
+        createdUniverse = true;
+    }
+
+    return Results.Ok(new { message = "Predefined baskets saved to database.", basketsCreated = seeded.Count, universeCreated = createdUniverse, instrumentCount = seeded.Sum(basket => basket.Instruments.Count) });
+});
+
 app.MapPut("/scanner/universes", async (
     ScannerUniversesUpdateRequest request,
     IInstrumentUniverseRepository universeRepository,
@@ -448,7 +675,7 @@ app.MapPut("/scanner/universes", async (
                 .Select(name => name.Trim())
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray(),
-            Instruments = universe.Instruments
+            DirectInstruments = universe.DirectInstruments
                 .Where(instrument => !string.IsNullOrWhiteSpace(instrument.Symbol))
                 .Select(instrument => new InstrumentSettingsRequest(
                     instrument.Symbol.Trim().ToUpperInvariant(),
@@ -461,7 +688,7 @@ app.MapPut("/scanner/universes", async (
 
     foreach (var universe in cleaned)
     {
-        foreach (var instrument in universe.Instruments)
+        foreach (var instrument in universe.DirectInstruments)
         {
             if (!Enum.TryParse<UniversalEngine.Domain.Market.Exchange>(instrument.Exchange, ignoreCase: true, out _))
             {
@@ -473,9 +700,10 @@ app.MapPut("/scanner/universes", async (
     await universeRepository.SaveScannerUniversesAsync(cleaned.Select(universe => new ScannerUniverseDefinition(
         universe.Name,
         universe.Enabled,
-        universe.Instruments.Count,
+        universe.DirectInstruments.Count,
         universe.BasketNames,
-        universe.Instruments.Select(ToScannerInstrumentDefinition).ToArray())).ToArray(), cancellationToken);
+        universe.DirectInstruments.Select(ToScannerInstrumentDefinition).ToArray(),
+        universe.DirectInstruments.Select(ToScannerInstrumentDefinition).ToArray())).ToArray(), cancellationToken);
     return Results.Ok(new { message = "Scanner universes saved to database.", count = cleaned.Length });
 });
 
@@ -499,6 +727,7 @@ app.MapGet("/scanner/runs/{runId}/candidates", async (
 
 app.MapPost("/pipeline/eod/run", async (
     string? sessionDate,
+    string? universeName,
     string? basketName,
     string? instrumentKey,
     EodCandidateGenerationService eodCandidateGenerationService,
@@ -506,12 +735,13 @@ app.MapPost("/pipeline/eod/run", async (
     NotificationTriggerService notificationTriggerService,
     IScannerRepository repository,
     IEventLogRepository eventLogRepository,
+    IInstrumentUniverseRepository universeRepository,
     Microsoft.Extensions.Options.IOptions<ScannerRunOptions> scannerOptions,
-    Microsoft.Extensions.Options.IOptions<MarketDataOptions> marketDataOptions,
+    Microsoft.Extensions.Options.IOptionsMonitor<MarketDataOptions> marketDataOptions,
     CancellationToken cancellationToken) =>
 {
     var options = scannerOptions.Value;
-    var universe = ResolveScannerUniverse(options, basketName, instrumentKey);
+    var universe = await ResolveScannerUniverseAsync(universeRepository, options, universeName, basketName, instrumentKey, cancellationToken);
     if (universe.Error is not null)
     {
         return Results.BadRequest(new { message = universe.Error });
@@ -528,7 +758,7 @@ app.MapPost("/pipeline/eod/run", async (
         new EodCandidateGenerationRequest(instruments, date),
         cancellationToken);
     var verdicts = result.Decisions.Select(riskVerdictService.EvaluateEodCandidate).ToArray();
-    await repository.SaveEodRunAsync(result, verdicts, marketDataOptions.Value.PrimaryProvider.ToString(), cancellationToken);
+    await repository.SaveEodRunAsync(result, verdicts, marketDataOptions.CurrentValue.PrimaryProvider.ToString(), cancellationToken);
     await notificationTriggerService.NotifyEodVerdictsAsync(verdicts, result.SessionDate, cancellationToken);
     await SavePipelineEventAsync(eventLogRepository, "EOD", result.SessionDate, result.Decisions.Count, result.AcceptedCandidates.Count, result.RejectedCandidates.Count, cancellationToken);
 
@@ -561,16 +791,18 @@ app.MapGet("/pre-market/runs/{runId}/decisions", async (
 
 app.MapPost("/pipeline/pre-market/run", async (
     string? sessionDate,
+    string? universeName,
     string? basketName,
     string? instrumentKey,
     PreMarketFilterService preMarketFilterService,
     IScannerRepository repository,
     IEventLogRepository eventLogRepository,
+    IInstrumentUniverseRepository universeRepository,
     Microsoft.Extensions.Options.IOptions<ScannerRunOptions> scannerOptions,
     CancellationToken cancellationToken) =>
 {
     var options = scannerOptions.Value;
-    var universe = ResolveScannerUniverse(options, basketName, instrumentKey);
+    var universe = await ResolveScannerUniverseAsync(universeRepository, options, universeName, basketName, instrumentKey, cancellationToken);
     if (universe.Error is not null)
     {
         return Results.BadRequest(new { message = universe.Error });
@@ -621,6 +853,7 @@ app.MapGet("/opening-range/runs/{runId}/decisions", async (
 
 app.MapPost("/pipeline/opening-range/run", async (
     string? sessionDate,
+    string? universeName,
     string? basketName,
     string? instrumentKey,
     OpeningRangeValidationService openingRangeValidationService,
@@ -628,11 +861,12 @@ app.MapPost("/pipeline/opening-range/run", async (
     NotificationTriggerService notificationTriggerService,
     IScannerRepository repository,
     IEventLogRepository eventLogRepository,
+    IInstrumentUniverseRepository universeRepository,
     Microsoft.Extensions.Options.IOptions<ScannerRunOptions> scannerOptions,
     CancellationToken cancellationToken) =>
 {
     var options = scannerOptions.Value;
-    var universe = ResolveScannerUniverse(options, basketName, instrumentKey);
+    var universe = await ResolveScannerUniverseAsync(universeRepository, options, universeName, basketName, instrumentKey, cancellationToken);
     if (universe.Error is not null)
     {
         return Results.BadRequest(new { message = universe.Error });
@@ -692,6 +926,7 @@ app.MapPost("/pipeline/live-validation/run", async (
     string? sessionDate,
     string? from,
     string? to,
+    string? universeName,
     string? basketName,
     string? instrumentKey,
     OpeningRangeValidationService openingRangeValidationService,
@@ -700,12 +935,13 @@ app.MapPost("/pipeline/live-validation/run", async (
     NotificationTriggerService notificationTriggerService,
     IScannerRepository repository,
     IEventLogRepository eventLogRepository,
+    IInstrumentUniverseRepository universeRepository,
     Microsoft.Extensions.Options.IOptions<ScannerRunOptions> scannerOptions,
     Microsoft.Extensions.Options.IOptions<LiveValidationOptions> liveOptions,
     CancellationToken cancellationToken) =>
 {
     var options = scannerOptions.Value;
-    var universe = ResolveScannerUniverse(options, basketName, instrumentKey);
+    var universe = await ResolveScannerUniverseAsync(universeRepository, options, universeName, basketName, instrumentKey, cancellationToken);
     if (universe.Error is not null)
     {
         return Results.BadRequest(new { message = universe.Error });
@@ -809,16 +1045,18 @@ app.MapGet("/backtests/runs/{runId}/trades", async (
 app.MapPost("/backtests/run", async (
     string? fromDate,
     string? toDate,
+    string? universeName,
     string? basketName,
     string? instrumentKey,
     BacktestReplayService backtestReplayService,
     IBacktestReportRepository backtestReportRepository,
     IEventLogRepository eventLogRepository,
+    IInstrumentUniverseRepository universeRepository,
     Microsoft.Extensions.Options.IOptions<ScannerRunOptions> scannerOptions,
     Microsoft.Extensions.Options.IOptions<BacktestOptions> backtestOptions,
     CancellationToken cancellationToken) =>
 {
-    var universe = ResolveScannerUniverse(scannerOptions.Value, basketName, instrumentKey);
+    var universe = await ResolveScannerUniverseAsync(universeRepository, scannerOptions.Value, universeName, basketName, instrumentKey, cancellationToken);
     if (universe.Error is not null)
     {
         return Results.BadRequest(new { message = universe.Error });
@@ -954,17 +1192,19 @@ app.MapGet("/ai/runs/{runId}/decisions", async (
 
 app.MapPost("/ai/run", async (
     string? sessionDate,
+    string? universeName,
     string? basketName,
     string? instrumentKey,
     AiAnalysisService aiAnalysisService,
     IScannerRepository scannerRepository,
     IAiAnalysisRepository aiAnalysisRepository,
     IEventLogRepository eventLogRepository,
+    IInstrumentUniverseRepository universeRepository,
     Microsoft.Extensions.Options.IOptions<ScannerRunOptions> scannerOptions,
     CancellationToken cancellationToken) =>
 {
     var options = scannerOptions.Value;
-    var universe = ResolveScannerUniverse(options, basketName, instrumentKey);
+    var universe = await ResolveScannerUniverseAsync(universeRepository, options, universeName, basketName, instrumentKey, cancellationToken);
     if (universe.Error is not null)
     {
         return Results.BadRequest(new { message = universe.Error });
@@ -1002,17 +1242,19 @@ app.MapPost("/ai/run", async (
 
 app.MapPost("/paper-trading/run", async (
     string? sessionDate,
+    string? universeName,
     string? basketName,
     string? instrumentKey,
     PaperTradingService paperTradingService,
     IScannerRepository scannerRepository,
     IPaperTradingRepository paperTradingRepository,
     IEventLogRepository eventLogRepository,
+    IInstrumentUniverseRepository universeRepository,
     Microsoft.Extensions.Options.IOptions<ScannerRunOptions> scannerOptions,
     CancellationToken cancellationToken) =>
 {
     var options = scannerOptions.Value;
-    var universe = ResolveScannerUniverse(options, basketName, instrumentKey);
+    var universe = await ResolveScannerUniverseAsync(universeRepository, options, universeName, basketName, instrumentKey, cancellationToken);
     if (universe.Error is not null)
     {
         return Results.BadRequest(new { message = universe.Error });
@@ -1111,18 +1353,20 @@ app.MapPost("/pipeline/monitor/run", async (
     string? sessionDate,
     string? from,
     string? to,
+    string? universeName,
     string? basketName,
     string? instrumentKey,
     SignalMonitoringService signalMonitoringService,
     NotificationTriggerService notificationTriggerService,
     IScannerRepository repository,
     IEventLogRepository eventLogRepository,
+    IInstrumentUniverseRepository universeRepository,
     Microsoft.Extensions.Options.IOptions<ScannerRunOptions> scannerOptions,
     Microsoft.Extensions.Options.IOptions<MonitoringOptions> monitoringOptions,
     CancellationToken cancellationToken) =>
 {
     var options = scannerOptions.Value;
-    var universe = ResolveScannerUniverse(options, basketName, instrumentKey);
+    var universe = await ResolveScannerUniverseAsync(universeRepository, options, universeName, basketName, instrumentKey, cancellationToken);
     if (universe.Error is not null)
     {
         return Results.BadRequest(new { message = universe.Error });
@@ -1278,10 +1522,21 @@ static string ResolveHistoricalCacheRoot(AnalysisDataOptions options) =>
             "historical-cache")
         : options.HistoricalCacheRoot;
 
+static string MaskSecret(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return "Not set";
+    }
+
+    return value.Length <= 8 ? "Configured" : $"{value[..4]}...{value[^4..]}";
+}
+
 static async Task SaveApplicationSettingsAsync(
     string configPath,
     ApplicationSettingsUpdateRequest request,
     MarketDataProviderKind provider,
+    MarketDataProviderKind brokerProvider,
     CancellationToken cancellationToken)
 {
     JsonObject root;
@@ -1318,6 +1573,12 @@ static async Task SaveApplicationSettingsAsync(
         ["FactorWeights"] = ToJsonObject(request.EodScanner.FactorWeights)
     };
 
+    var existingMarketData = root["MarketData"] as JsonObject;
+    var existingDhan = existingMarketData?["Dhan"] as JsonObject;
+    var accessToken = string.IsNullOrWhiteSpace(request.Broker.Dhan.AccessToken)
+        ? existingDhan?["AccessToken"]?.GetValue<string>()
+        : request.Broker.Dhan.AccessToken.Trim();
+
     root["AnalysisData"] = new JsonObject
     {
         ["PrimaryProvider"] = provider.ToString(),
@@ -1326,93 +1587,137 @@ static async Task SaveApplicationSettingsAsync(
         ["HistoricalCacheRoot"] = string.Empty
     };
 
+    root["PreMarket"] = new JsonObject
+    {
+        ["Enabled"] = request.Stages.PreMarket.Enabled,
+        ["EnableScheduledScan"] = request.Stages.PreMarket.EnableScheduledScan,
+        ["RunTimeLocal"] = request.Stages.PreMarket.RunTimeLocal.Trim(),
+        ["MaxAllowedGapPercent"] = request.Stages.PreMarket.MaxAllowedGapPercent,
+        ["AllowWhenPreMarketDataUnavailable"] = request.Stages.PreMarket.AllowWhenPreMarketDataUnavailable
+    };
+
+    root["OpeningRange"] = new JsonObject
+    {
+        ["Enabled"] = request.Stages.OpeningRange.Enabled,
+        ["EnableScheduledScan"] = request.Stages.OpeningRange.EnableScheduledScan,
+        ["RangeMinutes"] = request.Stages.OpeningRange.RangeMinutes,
+        ["Interval"] = request.Stages.OpeningRange.Interval.Trim(),
+        ["MarketOpenTime"] = request.Stages.OpeningRange.MarketOpenTime.Trim(),
+        ["BreakoutBufferTicks"] = request.Stages.OpeningRange.BreakoutBufferTicks,
+        ["TargetRiskRewardRatio"] = request.Stages.OpeningRange.TargetRiskRewardRatio,
+        ["MaxIntradayDataAgeMinutes"] = request.Stages.OpeningRange.MaxIntradayDataAgeMinutes
+    };
+
+    root["LiveValidation"] = new JsonObject
+    {
+        ["Enabled"] = request.Stages.LiveValidation.Enabled,
+        ["EnableScheduledScan"] = request.Stages.LiveValidation.EnableScheduledScan,
+        ["Interval"] = request.Stages.LiveValidation.Interval.Trim(),
+        ["StartTime"] = request.Stages.LiveValidation.StartTime.Trim(),
+        ["EndTime"] = request.Stages.LiveValidation.EndTime.Trim(),
+        ["PollMinutes"] = request.Stages.LiveValidation.PollMinutes,
+        ["ConfirmationBufferTicks"] = request.Stages.LiveValidation.ConfirmationBufferTicks,
+        ["MaxIntradayDataAgeMinutes"] = request.Stages.LiveValidation.MaxIntradayDataAgeMinutes
+    };
+
+    root["Monitoring"] = new JsonObject
+    {
+        ["Enabled"] = request.Stages.Monitoring.Enabled,
+        ["EnableScheduledScan"] = request.Stages.Monitoring.EnableScheduledScan,
+        ["Interval"] = request.Stages.Monitoring.Interval.Trim(),
+        ["StartTime"] = request.Stages.Monitoring.StartTime.Trim(),
+        ["EndTime"] = request.Stages.Monitoring.EndTime.Trim(),
+        ["PollMinutes"] = request.Stages.Monitoring.PollMinutes,
+        ["MaxIntradayDataAgeMinutes"] = request.Stages.Monitoring.MaxIntradayDataAgeMinutes
+    };
+
+    root["Backtest"] = new JsonObject
+    {
+        ["FromDate"] = request.Backtest.FromDate.Trim(),
+        ["ToDate"] = request.Backtest.ToDate.Trim(),
+        ["MaxHoldingDays"] = request.Backtest.MaxHoldingDays,
+        ["UseStopTargetSimulation"] = request.Backtest.UseStopTargetSimulation,
+        ["TargetRiskRewardRatio"] = request.Backtest.TargetRiskRewardRatio,
+        ["AssumeStopBeforeTargetWhenBothTouched"] = request.Backtest.AssumeStopBeforeTargetWhenBothTouched
+    };
+
+    root["AiAnalysis"] = new JsonObject
+    {
+        ["Enabled"] = request.Ai.Enabled,
+        ["Provider"] = request.Ai.Provider.Trim(),
+        ["PromptVersion"] = request.Ai.PromptVersion.Trim(),
+        ["MinimumTradeProbability"] = request.Ai.MinimumTradeProbability
+    };
+
+    var existingNotifications = root["Notifications"] as JsonObject;
+    var existingTelegram = existingNotifications?["Telegram"] as JsonObject;
+    var existingEmail = existingNotifications?["Email"] as JsonObject;
+    var telegramToken = string.IsNullOrWhiteSpace(request.Notifications.Telegram.BotToken)
+        ? existingTelegram?["BotToken"]?.GetValue<string>()
+        : request.Notifications.Telegram.BotToken.Trim();
+    var emailPassword = string.IsNullOrWhiteSpace(request.Notifications.Email.Password)
+        ? existingEmail?["Password"]?.GetValue<string>()
+        : request.Notifications.Email.Password.Trim();
+
+    root["Notifications"] = new JsonObject
+    {
+        ["Channel"] = request.Notifications.Channel.Trim(),
+        ["SendEodWatchlistNotifications"] = request.Notifications.SendEodWatchlistNotifications,
+        ["MinimumEodScoreToNotify"] = request.Notifications.MinimumEodScoreToNotify,
+        ["Telegram"] = new JsonObject
+        {
+            ["BotToken"] = string.IsNullOrWhiteSpace(telegramToken) ? null : telegramToken,
+            ["ChatId"] = string.IsNullOrWhiteSpace(request.Notifications.Telegram.ChatId) ? null : request.Notifications.Telegram.ChatId.Trim()
+        },
+        ["Email"] = new JsonObject
+        {
+            ["SmtpHost"] = string.IsNullOrWhiteSpace(request.Notifications.Email.SmtpHost) ? null : request.Notifications.Email.SmtpHost.Trim(),
+            ["SmtpPort"] = request.Notifications.Email.SmtpPort,
+            ["UseSsl"] = request.Notifications.Email.UseSsl,
+            ["Username"] = string.IsNullOrWhiteSpace(request.Notifications.Email.Username) ? null : request.Notifications.Email.Username.Trim(),
+            ["Password"] = string.IsNullOrWhiteSpace(emailPassword) ? null : emailPassword,
+            ["From"] = string.IsNullOrWhiteSpace(request.Notifications.Email.From) ? null : request.Notifications.Email.From.Trim(),
+            ["To"] = string.IsNullOrWhiteSpace(request.Notifications.Email.To) ? null : request.Notifications.Email.To.Trim()
+        }
+    };
+
+    var marketData = new JsonObject
+    {
+        ["PrimaryProvider"] = brokerProvider.ToString(),
+        ["DhanInstrumentMasterUrl"] =
+            existingMarketData?["DhanInstrumentMasterUrl"]?.GetValue<string>() ??
+            "https://images.dhan.co/api-data/api-scrip-master-detailed.csv",
+        ["Dhan"] = new JsonObject
+        {
+            ["BaseUrl"] = request.Broker.Dhan.BaseUrl.Trim(),
+            ["ClientId"] = string.IsNullOrWhiteSpace(request.Broker.Dhan.ClientId) ? null : request.Broker.Dhan.ClientId.Trim(),
+            ["AccessToken"] = string.IsNullOrWhiteSpace(accessToken) ? null : accessToken,
+            ["InstrumentType"] = request.Broker.Dhan.InstrumentType.Trim(),
+            ["IncludeOpenInterest"] = request.Broker.Dhan.IncludeOpenInterest,
+            ["RetryCount"] = request.Broker.Dhan.RetryCount,
+            ["RetryBaseDelayMs"] = request.Broker.Dhan.RetryBaseDelayMs,
+            ["RequestThrottleDelayMs"] = request.Broker.Dhan.RequestThrottleDelayMs
+        }
+    };
+
+    CopyExistingMarketDataNode(existingMarketData, marketData, "EnabledProviders");
+    CopyExistingMarketDataNode(existingMarketData, marketData, "CsvDataRoot");
+    CopyExistingMarketDataNode(existingMarketData, marketData, "Zerodha");
+    CopyExistingMarketDataNode(existingMarketData, marketData, "Groww");
+    root["MarketData"] = marketData;
+
     await File.WriteAllTextAsync(
         configPath,
         root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }),
         cancellationToken);
 }
 
-static async Task SaveScannerBasketsAsync(
-    string configPath,
-    IReadOnlyList<ScannerBasketUpdateRequest> baskets,
-    CancellationToken cancellationToken)
+static void CopyExistingMarketDataNode(JsonObject? source, JsonObject target, string propertyName)
 {
-    JsonObject root;
-    if (File.Exists(configPath))
+    if (source?[propertyName] is { } node)
     {
-        var content = await File.ReadAllTextAsync(configPath, cancellationToken);
-        root = JsonNode.Parse(string.IsNullOrWhiteSpace(content) ? "{}" : content)?.AsObject() ?? new JsonObject();
+        target[propertyName] = node.DeepClone();
     }
-    else
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
-        root = new JsonObject();
-    }
-
-    var scannerRun = root["ScannerRun"] as JsonObject ?? new JsonObject();
-    scannerRun["Baskets"] = new JsonArray(baskets
-        .Select(basket => new JsonObject
-        {
-            ["Name"] = basket.Name,
-            ["Enabled"] = basket.Enabled,
-            ["MaxSymbols"] = basket.MaxSymbols,
-            ["Instruments"] = new JsonArray(basket.Instruments
-                .Select(instr => new JsonObject
-                {
-                    ["Symbol"] = instr.Symbol,
-                    ["Exchange"] = instr.Exchange,
-                    ["Isin"] = instr.Isin,
-                    ["SecurityId"] = instr.SecurityId
-                })
-                .Cast<JsonNode?>()
-                .ToArray())
-        })
-        .Cast<JsonNode?>()
-        .ToArray());
-    root["ScannerRun"] = scannerRun;
-
-    await File.WriteAllTextAsync(
-        configPath,
-        root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }),
-        cancellationToken);
-}
-
-static async Task SaveScannerInstrumentsAsync(
-    string configPath,
-    IReadOnlyList<InstrumentSettingsRequest> instruments,
-    CancellationToken cancellationToken)
-{
-    JsonObject root;
-    if (File.Exists(configPath))
-    {
-        var content = await File.ReadAllTextAsync(configPath, cancellationToken);
-        root = JsonNode.Parse(string.IsNullOrWhiteSpace(content) ? "{}" : content)?.AsObject() ?? new JsonObject();
-    }
-    else
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
-        root = new JsonObject();
-    }
-
-    var scannerRun = root["ScannerRun"] as JsonObject ?? new JsonObject();
-    scannerRun["Instruments"] = new JsonArray(instruments
-        .OrderBy(instrument => instrument.Exchange)
-        .ThenBy(instrument => instrument.Symbol)
-        .Select(instrument => new JsonObject
-        {
-            ["Symbol"] = instrument.Symbol,
-            ["Exchange"] = instrument.Exchange,
-            ["Isin"] = instrument.Isin,
-            ["SecurityId"] = instrument.SecurityId
-        })
-        .Cast<JsonNode?>()
-        .ToArray());
-    root["ScannerRun"] = scannerRun;
-
-    await File.WriteAllTextAsync(
-        configPath,
-        root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }),
-        cancellationToken);
 }
 
 static JsonObject ToJsonObject(IReadOnlyDictionary<string, decimal> values)
@@ -1426,39 +1731,114 @@ static JsonObject ToJsonObject(IReadOnlyDictionary<string, decimal> values)
     return node;
 }
 
-static ScannerUniverseResolution ResolveScannerUniverse(
+static async Task<ScannerUniverseState> GetScannerStateAsync(
+    IInstrumentUniverseRepository repository,
     ScannerRunOptions options,
-    string? basketName,
-    string? instrumentKey)
+    CancellationToken cancellationToken)
 {
-    if (!string.IsNullOrWhiteSpace(basketName) && !string.IsNullOrWhiteSpace(instrumentKey))
+    var state = await repository.GetScannerUniverseStateAsync(cancellationToken);
+    if (state.Instruments.Count > 0 || state.Baskets.Count > 0 || state.Universes.Count > 0)
     {
-        return ScannerUniverseResolution.Failed("Choose either a basket or one instrument, not both.");
+        return state;
+    }
+
+    var instruments = options.Instruments
+        .Where(instrument => !string.IsNullOrWhiteSpace(instrument.Symbol))
+        .Select(ToScannerInstrumentDefinitionFromOptions)
+        .ToArray();
+    var baskets = options.GetBaskets()
+        .Select(basket =>
+        {
+            var basketInstruments = basket.Instruments
+                .Where(instrument => !string.IsNullOrWhiteSpace(instrument.Symbol))
+                .Select(ToScannerInstrumentDefinitionFromOptions)
+                .ToArray();
+            return new ScannerBasketDefinition(
+                basket.Name,
+                basket.Enabled,
+                basket.MaxSymbols,
+                basketInstruments.Length,
+                basketInstruments);
+        })
+        .ToArray();
+    var defaultInstruments = options.GetInstruments()
+        .Select(ToScannerInstrumentDefinitionFromDomain)
+        .ToArray();
+    var universes = defaultInstruments.Length == 0
+        ? []
+        : new[]
+        {
+            new ScannerUniverseDefinition(
+                "Default",
+                true,
+                defaultInstruments.Length,
+                baskets.Where(basket => basket.Enabled).Select(basket => basket.Name).ToArray(),
+                defaultInstruments,
+                defaultInstruments)
+        };
+
+    var seededState = new ScannerUniverseState(instruments, baskets, universes);
+    if (instruments.Length > 0 || baskets.Length > 0 || universes.Length > 0)
+    {
+        await repository.SaveScannerInstrumentsAsync(instruments, cancellationToken);
+        await repository.SaveScannerBasketsAsync(baskets, cancellationToken);
+        await repository.SaveScannerUniversesAsync(universes, cancellationToken);
+    }
+
+    return seededState;
+}
+
+static async Task<ScannerUniverseResolution> ResolveScannerUniverseAsync(
+    IInstrumentUniverseRepository repository,
+    ScannerRunOptions options,
+    string? universeName,
+    string? basketName,
+    string? instrumentKey,
+    CancellationToken cancellationToken)
+{
+    var selectedModes = new[] { universeName, basketName, instrumentKey }.Count(value => !string.IsNullOrWhiteSpace(value));
+    if (selectedModes > 1)
+    {
+        return ScannerUniverseResolution.Failed("Choose one scan source: universe, basket, or instrument.");
+    }
+
+    var state = await GetScannerStateAsync(repository, options, cancellationToken);
+
+    if (!string.IsNullOrWhiteSpace(universeName))
+    {
+        var universe = state.Universes.FirstOrDefault(item => string.Equals(item.Name, universeName, StringComparison.OrdinalIgnoreCase));
+        if (universe is null)
+        {
+            return ScannerUniverseResolution.Failed($"Scanner universe '{universeName}' was not found.");
+        }
+
+        return universe.Instruments.Count == 0
+            ? ScannerUniverseResolution.Failed($"Scanner universe '{universe.Name}' has no instruments.")
+            : ScannerUniverseResolution.Resolved(ToDomainInstruments(universe.Instruments));
     }
 
     if (!string.IsNullOrWhiteSpace(basketName))
     {
-        var basket = options.GetBaskets()
+        var basket = state.Baskets
             .FirstOrDefault(item => string.Equals(item.Name, basketName, StringComparison.OrdinalIgnoreCase));
         if (basket is null)
         {
             return ScannerUniverseResolution.Failed($"Scanner basket '{basketName}' was not found.");
         }
 
-        var instruments = basket.Instruments
-            .Where(instrument => !string.IsNullOrWhiteSpace(instrument.Symbol))
-            .Take(basket.MaxSymbols <= 0 ? int.MaxValue : basket.MaxSymbols)
-            .Select(ToDomainInstrument)
-            .GroupBy(instrument => instrument.Key)
-            .Select(group => group.First())
-            .ToArray();
+        var instruments = ToDomainInstruments(basket.Instruments
+            .Take(basket.MaxSymbols <= 0 ? int.MaxValue : basket.MaxSymbols));
 
         return instruments.Length == 0
             ? ScannerUniverseResolution.Failed($"Scanner basket '{basket.Name}' has no instruments.")
             : ScannerUniverseResolution.Resolved(instruments);
     }
 
-    var allInstruments = options.GetInstruments();
+    var allInstrumentDefinitions = state.Universes.Any(universe => universe.Enabled)
+        ? state.Universes.Where(universe => universe.Enabled).SelectMany(universe => universe.Instruments)
+        : state.Instruments.Concat(state.Baskets.Where(basket => basket.Enabled)
+            .SelectMany(basket => basket.Instruments.Take(basket.MaxSymbols <= 0 ? int.MaxValue : basket.MaxSymbols)));
+    var allInstruments = ToDomainInstruments(allInstrumentDefinitions);
     if (!string.IsNullOrWhiteSpace(instrumentKey))
     {
         var normalizedKey = instrumentKey.Trim().ToUpperInvariant();
@@ -1471,7 +1851,76 @@ static ScannerUniverseResolution ResolveScannerUniverse(
     return ScannerUniverseResolution.Resolved(allInstruments);
 }
 
-static Instrument ToDomainInstrument(InstrumentOptions instrument) =>
+static IReadOnlyList<string> GetDuplicateInstrumentKeys(ScannerUniverseState state) =>
+    state.Universes.Any(universe => universe.Enabled)
+        ? GetDuplicateInstrumentKeysFromDefinitions(state.Universes.Where(universe => universe.Enabled).SelectMany(universe => universe.Instruments))
+        : GetDuplicateInstrumentKeysFromDefinitions(state.Instruments.Concat(state.Baskets.Where(basket => basket.Enabled).SelectMany(basket => basket.Instruments)));
+
+static IReadOnlyList<string> GetDuplicateInstrumentKeysFromDefinitions(IEnumerable<ScannerInstrumentDefinition> instruments) =>
+    instruments
+        .Where(instrument => !string.IsNullOrWhiteSpace(instrument.Symbol))
+        .GroupBy(instrument => instrument.Key)
+        .Where(group => group.Count() > 1)
+        .Select(group => group.Key)
+        .OrderBy(key => key)
+        .ToArray();
+
+static Instrument[] ToDomainInstruments(IEnumerable<ScannerInstrumentDefinition> instruments) =>
+    instruments
+        .Where(instrument => !string.IsNullOrWhiteSpace(instrument.Symbol))
+        .Select(ToDomainInstrument)
+        .GroupBy(instrument => instrument.Key)
+        .Select(group => group.First())
+        .ToArray();
+
+static ScannerInstrumentResponse ToScannerInstrumentResponse(ScannerInstrumentDefinition instrument) =>
+    new(instrument.Symbol, instrument.Exchange, instrument.Isin, instrument.SecurityId, instrument.Key);
+
+static ScannerInstrumentDefinition ToScannerInstrumentDefinition(InstrumentSettingsRequest instrument)
+{
+    var exchange = string.IsNullOrWhiteSpace(instrument.Exchange) ? "Nse" : instrument.Exchange.Trim();
+    var symbol = instrument.Symbol.Trim().ToUpperInvariant();
+    return new ScannerInstrumentDefinition(
+        symbol,
+        exchange,
+        string.IsNullOrWhiteSpace(instrument.Isin) ? null : instrument.Isin.Trim(),
+        string.IsNullOrWhiteSpace(instrument.SecurityId) ? null : instrument.SecurityId.Trim(),
+        $"{exchange}:{symbol}".ToUpperInvariant());
+}
+
+static ScannerInstrumentDefinition ToScannerInstrumentDefinitionFromLookup(InstrumentLookupResult instrument)
+{
+    var exchange = string.Equals(instrument.Exchange, "BSE", StringComparison.OrdinalIgnoreCase) ? "Bse" : "Nse";
+    var symbol = instrument.Symbol.Trim().ToUpperInvariant();
+    return new ScannerInstrumentDefinition(
+        symbol,
+        exchange,
+        string.IsNullOrWhiteSpace(instrument.Isin) ? null : instrument.Isin.Trim(),
+        string.IsNullOrWhiteSpace(instrument.SecurityId) ? null : instrument.SecurityId.Trim(),
+        $"{exchange}:{symbol}".ToUpperInvariant());
+}
+
+static ScannerInstrumentDefinition ToScannerInstrumentDefinitionFromOptions(InstrumentOptions instrument)
+{
+    var exchange = string.IsNullOrWhiteSpace(instrument.Exchange) ? "Nse" : instrument.Exchange.Trim();
+    var symbol = instrument.Symbol.Trim().ToUpperInvariant();
+    return new ScannerInstrumentDefinition(
+        symbol,
+        exchange,
+        string.IsNullOrWhiteSpace(instrument.Isin) ? null : instrument.Isin.Trim(),
+        string.IsNullOrWhiteSpace(instrument.SecurityId) ? null : instrument.SecurityId.Trim(),
+        $"{exchange}:{symbol}".ToUpperInvariant());
+}
+
+static ScannerInstrumentDefinition ToScannerInstrumentDefinitionFromDomain(Instrument instrument) =>
+    new(
+        instrument.Symbol,
+        instrument.Exchange.ToString(),
+        instrument.Isin,
+        instrument.SecurityId,
+        instrument.Key);
+
+static Instrument ToDomainInstrument(ScannerInstrumentDefinition instrument) =>
     new(
         instrument.Symbol.Trim().ToUpperInvariant(),
         Enum.Parse<Exchange>(instrument.Exchange, ignoreCase: true),
@@ -1555,12 +2004,22 @@ public sealed record ApplicationSettingsResponse(
     RiskSettingsResponse Risk,
     EodScannerSettingsResponse EodScanner,
     AnalysisSettingsResponse Analysis,
+    BrokerSettingsResponse Broker,
+    StageSettingsResponse Stages,
+    BacktestSettingsResponse Backtest,
+    AiSettingsResponse Ai,
+    NotificationSettingsResponse Notifications,
     string Message);
 
 public sealed record ApplicationSettingsUpdateRequest(
     RiskSettingsResponse Risk,
     EodScannerSettingsResponse EodScanner,
-    AnalysisSettingsResponse Analysis);
+    AnalysisSettingsResponse Analysis,
+    BrokerSettingsResponse Broker,
+    StageSettingsResponse Stages,
+    BacktestSettingsResponse Backtest,
+    AiSettingsResponse Ai,
+    NotificationSettingsResponse Notifications);
 
 public sealed record RiskSettingsResponse(
     decimal CapitalAmount,
@@ -1584,6 +2043,99 @@ public sealed record AnalysisSettingsResponse(
     string PrimaryProvider,
     bool UseHistoricalCache,
     int HistoricalCacheTtlHours);
+
+public sealed record BrokerSettingsResponse(
+    string PrimaryProvider,
+    DhanBrokerSettingsResponse Dhan);
+
+public sealed record DhanBrokerSettingsResponse(
+    string BaseUrl,
+    string ClientId,
+    string AccessTokenMasked,
+    string AccessToken,
+    string InstrumentType,
+    bool IncludeOpenInterest,
+    int RetryCount,
+    int RetryBaseDelayMs,
+    int RequestThrottleDelayMs);
+
+public sealed record StageSettingsResponse(
+    PreMarketSettingsResponse PreMarket,
+    OpeningRangeSettingsResponse OpeningRange,
+    LiveValidationSettingsResponse LiveValidation,
+    MonitoringSettingsResponse Monitoring);
+
+public sealed record PreMarketSettingsResponse(
+    bool Enabled,
+    bool EnableScheduledScan,
+    string RunTimeLocal,
+    decimal MaxAllowedGapPercent,
+    bool AllowWhenPreMarketDataUnavailable);
+
+public sealed record OpeningRangeSettingsResponse(
+    bool Enabled,
+    bool EnableScheduledScan,
+    int RangeMinutes,
+    string Interval,
+    string MarketOpenTime,
+    int BreakoutBufferTicks,
+    decimal TargetRiskRewardRatio,
+    int MaxIntradayDataAgeMinutes);
+
+public sealed record LiveValidationSettingsResponse(
+    bool Enabled,
+    bool EnableScheduledScan,
+    string Interval,
+    string StartTime,
+    string EndTime,
+    int PollMinutes,
+    int ConfirmationBufferTicks,
+    int MaxIntradayDataAgeMinutes);
+
+public sealed record MonitoringSettingsResponse(
+    bool Enabled,
+    bool EnableScheduledScan,
+    string Interval,
+    string StartTime,
+    string EndTime,
+    int PollMinutes,
+    int MaxIntradayDataAgeMinutes);
+
+public sealed record BacktestSettingsResponse(
+    string FromDate,
+    string ToDate,
+    int MaxHoldingDays,
+    bool UseStopTargetSimulation,
+    decimal TargetRiskRewardRatio,
+    bool AssumeStopBeforeTargetWhenBothTouched);
+
+public sealed record AiSettingsResponse(
+    bool Enabled,
+    string Provider,
+    string PromptVersion,
+    decimal MinimumTradeProbability);
+
+public sealed record NotificationSettingsResponse(
+    string Channel,
+    bool SendEodWatchlistNotifications,
+    decimal MinimumEodScoreToNotify,
+    TelegramSettingsResponse Telegram,
+    EmailSettingsResponse Email);
+
+public sealed record TelegramSettingsResponse(
+    string BotTokenMasked,
+    string BotToken,
+    string ChatId);
+
+public sealed record EmailSettingsResponse(
+    string SmtpHost,
+    int SmtpPort,
+    bool UseSsl,
+    string Username,
+    string PasswordMasked,
+    string Password,
+    string From,
+    string To);
 
 public sealed record PipelineStageStatus(
     string Stage,
@@ -1609,6 +2161,7 @@ public sealed record ScannerInstrumentsResponse(
     int Count,
     IReadOnlyList<string> DuplicateInstrumentKeys,
     IReadOnlyList<ScannerBasketResponse> Baskets,
+    IReadOnlyList<ScannerUniverseResponse> Universes,
     IReadOnlyList<ScannerInstrumentResponse> Instruments);
 
 public sealed record ScannerInstrumentsUpdateRequest(
@@ -1629,6 +2182,28 @@ public sealed record ScannerBasketUpdateRequest(
     bool Enabled,
     int MaxSymbols,
     IReadOnlyList<InstrumentSettingsRequest> Instruments);
+
+public sealed record ScannerUniverseResponse(
+    string Name,
+    bool Enabled,
+    int InstrumentCount,
+    IReadOnlyList<string> BasketNames,
+    IReadOnlyList<ScannerInstrumentResponse> DirectInstruments,
+    IReadOnlyList<ScannerInstrumentResponse> Instruments);
+
+public sealed record ScannerUniversesUpdateRequest(
+    IReadOnlyList<ScannerUniverseUpdateRequest> Universes);
+
+public sealed record ScannerUniverseUpdateRequest(
+    string Name,
+    bool Enabled,
+    IReadOnlyList<string> BasketNames,
+    IReadOnlyList<InstrumentSettingsRequest> DirectInstruments);
+
+public sealed record PredefinedBasketSeed(
+    string Name,
+    int MaxSymbols,
+    IReadOnlyList<string> Symbols);
 
 public sealed record InstrumentSettingsRequest(
     string Symbol,

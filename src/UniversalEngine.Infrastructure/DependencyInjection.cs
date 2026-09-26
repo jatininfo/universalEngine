@@ -18,38 +18,18 @@ public static class DependencyInjection
         services.AddSingleton<CsvMarketDataProvider>();
         services.AddHttpClient<DhanMarketDataProvider>((serviceProvider, client) =>
         {
-            var options = serviceProvider.GetRequiredService<IOptions<MarketDataOptions>>().Value;
-            client.BaseAddress = new Uri(options.Dhan.BaseUrl);
             client.Timeout = TimeSpan.FromSeconds(30);
         });
         services.AddHttpClient(nameof(BrokerConnectionVerifier));
         services.AddSingleton<IBrokerConnectionVerifier, BrokerConnectionVerifier>();
         services.AddHttpClient<DhanInstrumentMasterProvider>();
         services.AddSingleton<IInstrumentMasterProvider, DhanInstrumentMasterProvider>();
-        services.AddSingleton<IMarketDataProvider>(serviceProvider =>
-        {
-            var options = serviceProvider.GetRequiredService<IOptions<MarketDataOptions>>().Value;
-            return options.PrimaryProvider switch
-            {
-                MarketDataProviderKind.Csv => serviceProvider.GetRequiredService<CsvMarketDataProvider>(),
-                MarketDataProviderKind.Dhan => serviceProvider.GetRequiredService<DhanMarketDataProvider>(),
-                _ => serviceProvider.GetRequiredService<ConfiguredMarketDataProvider>()
-            };
-        });
+        services.AddSingleton<IMarketDataProvider, RuntimeMarketDataProvider>();
         services.AddSingleton<IAnalysisMarketDataProvider, AnalysisMarketDataProvider>();
         services.AddSingleton<ConsoleNotificationSender>();
         services.AddHttpClient<TelegramNotificationSender>();
         services.AddSingleton<EmailNotificationSender>();
-        services.AddSingleton<INotificationSender>(serviceProvider =>
-        {
-            var options = serviceProvider.GetRequiredService<IOptions<NotificationOptions>>().Value;
-            return options.Channel switch
-            {
-                NotificationChannel.Telegram => serviceProvider.GetRequiredService<TelegramNotificationSender>(),
-                NotificationChannel.Email => serviceProvider.GetRequiredService<EmailNotificationSender>(),
-                _ => serviceProvider.GetRequiredService<ConsoleNotificationSender>()
-            };
-        });
+        services.AddSingleton<INotificationSender, RuntimeNotificationSender>();
         // Ensure SQLite uses a shared absolute file path across processes.
         services.AddSingleton<SqliteScannerRepository>(serviceProvider =>
         {

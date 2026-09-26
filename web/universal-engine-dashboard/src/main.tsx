@@ -232,6 +232,7 @@ type ScannerInstruments = {
   count: number;
   duplicateInstrumentKeys: string[];
   baskets: ScannerBasket[];
+  universes: ScannerUniverse[];
   instruments: ScannerInstrument[];
 };
 
@@ -250,7 +251,61 @@ type ScannerBasketDraft = {
   instruments: ScannerInstrument[];
 };
 
-type RunUniverseMode = "all" | "basket" | "instrument";
+type ScannerUniverse = {
+  name: string;
+  enabled: boolean;
+  instrumentCount: number;
+  basketNames: string[];
+  directInstruments: ScannerInstrument[];
+  instruments: ScannerInstrument[];
+};
+
+type ScannerUniverseDraft = {
+  name: string;
+  enabled: boolean;
+  basketNames: string[];
+  directInstruments: ScannerInstrument[];
+};
+
+type RunUniverseMode = "universe" | "all" | "basket" | "instrument";
+type DashboardView =
+  | "overview"
+  | "pipeline"
+  | "workflow"
+  | "instruments"
+  | "lookup"
+  | "monitoring"
+  | "backtesting"
+  | "reports"
+  | "paper"
+  | "ai"
+  | "broker"
+  | "settings"
+  | "events"
+  | "notifications";
+type SettingsGroup = "broker" | "risk" | "scanner" | "data" | "pipeline" | "analytics" | "notifications";
+
+const dashboardViews = new Set<DashboardView>([
+  "overview",
+  "pipeline",
+  "workflow",
+  "instruments",
+  "lookup",
+  "monitoring",
+  "backtesting",
+  "reports",
+  "paper",
+  "ai",
+  "broker",
+  "settings",
+  "events",
+  "notifications"
+]);
+
+function getHashView(): DashboardView {
+  const value = window.location.hash.replace("#", "") as DashboardView;
+  return dashboardViews.has(value) ? value : "overview";
+}
 
 type PipelineRunResult = {
   stage: string;
@@ -304,11 +359,98 @@ type ApplicationSettings = {
     maxDailyDataAgeHours: number;
     minimumAcceptedScore: number;
     maxAcceptedCandidates: number;
+    factorWeights: Record<string, number>;
   };
   analysis: {
     primaryProvider: string;
     useHistoricalCache: boolean;
     historicalCacheTtlHours: number;
+  };
+  broker: {
+    primaryProvider: string;
+    dhan: {
+      baseUrl: string;
+      clientId: string;
+      accessTokenMasked: string;
+      accessToken: string;
+      instrumentType: string;
+      includeOpenInterest: boolean;
+      retryCount: number;
+      retryBaseDelayMs: number;
+      requestThrottleDelayMs: number;
+    };
+  };
+  stages: {
+    preMarket: {
+      enabled: boolean;
+      enableScheduledScan: boolean;
+      runTimeLocal: string;
+      maxAllowedGapPercent: number;
+      allowWhenPreMarketDataUnavailable: boolean;
+    };
+    openingRange: {
+      enabled: boolean;
+      enableScheduledScan: boolean;
+      rangeMinutes: number;
+      interval: string;
+      marketOpenTime: string;
+      breakoutBufferTicks: number;
+      targetRiskRewardRatio: number;
+      maxIntradayDataAgeMinutes: number;
+    };
+    liveValidation: {
+      enabled: boolean;
+      enableScheduledScan: boolean;
+      interval: string;
+      startTime: string;
+      endTime: string;
+      pollMinutes: number;
+      confirmationBufferTicks: number;
+      maxIntradayDataAgeMinutes: number;
+    };
+    monitoring: {
+      enabled: boolean;
+      enableScheduledScan: boolean;
+      interval: string;
+      startTime: string;
+      endTime: string;
+      pollMinutes: number;
+      maxIntradayDataAgeMinutes: number;
+    };
+  };
+  backtest: {
+    fromDate: string;
+    toDate: string;
+    maxHoldingDays: number;
+    useStopTargetSimulation: boolean;
+    targetRiskRewardRatio: number;
+    assumeStopBeforeTargetWhenBothTouched: boolean;
+  };
+  ai: {
+    enabled: boolean;
+    provider: string;
+    promptVersion: string;
+    minimumTradeProbability: number;
+  };
+  notifications: {
+    channel: string;
+    sendEodWatchlistNotifications: boolean;
+    minimumEodScoreToNotify: number;
+    telegram: {
+      botTokenMasked: string;
+      botToken: string;
+      chatId: string;
+    };
+    email: {
+      smtpHost: string;
+      smtpPort: number;
+      useSsl: boolean;
+      username: string;
+      passwordMasked: string;
+      password: string;
+      from: string;
+      to: string;
+    };
   };
   message: string;
 };
@@ -396,6 +538,7 @@ const initialState: DashboardState = {
 
 function App() {
   const [state, setState] = React.useState(initialState);
+  const [activeView, setActiveView] = React.useState<DashboardView>(() => getHashView());
   const [isSidebarCollapsed, setSidebarCollapsed] = React.useState(false);
   const [isMenuOpen, setMenuOpen] = React.useState(false);
   const [settingsDraft, setSettingsDraft] = React.useState<ApplicationSettings | null>(null);
@@ -404,6 +547,8 @@ function App() {
   const [instrumentMessage, setInstrumentMessage] = React.useState<string | null>(null);
   const [basketDraft, setBasketDraft] = React.useState<ScannerBasketDraft[]>([]);
   const [basketMessage, setBasketMessage] = React.useState<string | null>(null);
+  const [universeDraft, setUniverseDraft] = React.useState<ScannerUniverseDraft[]>([]);
+  const [universeMessage, setUniverseMessage] = React.useState<string | null>(null);
   const [symbol, setSymbol] = React.useState("RELIANCE");
   const [runDate, setRunDate] = React.useState(() => new Date().toISOString().slice(0, 10));
   const [backtestFromDate, setBacktestFromDate] = React.useState(() => {
@@ -418,7 +563,8 @@ function App() {
   });
   const [fromTime, setFromTime] = React.useState("09:30");
   const [toTime, setToTime] = React.useState("10:00");
-  const [runUniverseMode, setRunUniverseMode] = React.useState<RunUniverseMode>("all");
+  const [runUniverseMode, setRunUniverseMode] = React.useState<RunUniverseMode>("universe");
+  const [selectedUniverseName, setSelectedUniverseName] = React.useState("");
   const [selectedBasketName, setSelectedBasketName] = React.useState("");
   const [selectedInstrumentKey, setSelectedInstrumentKey] = React.useState("");
   const [runningStage, setRunningStage] = React.useState<string | null>(null);
@@ -428,6 +574,16 @@ function App() {
   const loadDashboard = React.useCallback(async () => {
     setState((current) => ({ ...current, loading: true, error: null }));
     try {
+      const applicationSettingsRequest = getJson<ApplicationSettings>("/settings/application");
+      void applicationSettingsRequest
+        .then((applicationSettings) => {
+          setSettingsDraft(applicationSettings);
+          setState((current) => ({ ...current, applicationSettings }));
+        })
+        .catch((error) => {
+          setSettingsMessage(error instanceof Error ? error.message : "Application settings load failed");
+        });
+
       const [
         health,
         scannerRuns,
@@ -464,7 +620,7 @@ function App() {
         getJson<AiAnalysisRun[]>("/ai/runs/latest?limit=5"),
         getJson<BrokerStatus[]>("/broker/status"),
         getJson<DataSourceSettings>("/settings/data-sources"),
-        getJson<ApplicationSettings>("/settings/application"),
+        applicationSettingsRequest,
         getJson<PipelineStatus>(`/pipeline/status?sessionDate=${runDate}`),
         getJson<ScannerInstruments>("/scanner/instruments"),
         getJson<OutcomeFeedback[]>("/feedback/outcomes/latest?limit=10"),
@@ -533,6 +689,13 @@ function App() {
         maxSymbols: basket.maxSymbols,
         instruments: basket.instruments
       })));
+      setUniverseDraft(scannerInstruments.universes.map((universe) => ({
+        name: universe.name,
+        enabled: universe.enabled,
+        basketNames: universe.basketNames,
+        directInstruments: universe.directInstruments
+      })));
+      setSelectedUniverseName((current) => current || scannerInstruments.universes.find((universe) => universe.enabled)?.name || scannerInstruments.universes[0]?.name || "");
     } catch (error) {
       setState((current) => ({
         ...current,
@@ -545,6 +708,38 @@ function App() {
   React.useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
+
+  React.useEffect(() => {
+    const onHashChange = () => setActiveView(getHashView());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  React.useEffect(() => {
+    if (activeView !== "settings") {
+      return;
+    }
+
+    let isCurrent = true;
+    void getJson<ApplicationSettings>("/settings/application")
+      .then((applicationSettings) => {
+        if (!isCurrent) {
+          return;
+        }
+
+        setSettingsDraft(applicationSettings);
+        setState((current) => ({ ...current, applicationSettings }));
+      })
+      .catch((error) => {
+        if (isCurrent) {
+          setSettingsMessage(error instanceof Error ? error.message : "Application settings load failed");
+        }
+      });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [activeView]);
 
   async function lookupInstrument(event: React.FormEvent) {
     event.preventDefault();
@@ -672,25 +867,53 @@ function App() {
     }
   }
 
+  async function saveScannerUniverses() {
+    try {
+      const response = await putJson<{ message: string; count: number }>("/scanner/universes", { universes: universeDraft });
+      setUniverseMessage(`${response.message} Saved ${response.count} universes.`);
+      await loadDashboard();
+    } catch (error) {
+      setUniverseMessage(error instanceof Error ? error.message : "Scanner universe save failed");
+    }
+  }
+
+  async function seedPredefinedBaskets() {
+    try {
+      const response = await postJson<{ message: string; basketsCreated: number; instrumentCount: number }>("/scanner/baskets/predefined");
+      setBasketMessage(`${response.message} Created ${response.basketsCreated} baskets with ${response.instrumentCount} resolved stocks.`);
+      await loadDashboard();
+    } catch (error) {
+      setBasketMessage(error instanceof Error ? error.message : "Predefined basket creation failed");
+    }
+  }
+
   const latestRun = state.scannerRuns[0];
   const accepted = latestRun?.acceptedCount ?? 0;
   const rejected = latestRun?.rejectedCount ?? 0;
   const actionable = state.monitorRuns[0]?.actionableCount ?? 0;
   const notificationFailures = state.notifications.filter((item) => !item.isSuccess).length;
   const connectedBrokers = state.brokerStatuses.filter((item) => item.isConnected).length;
+  const enabledUniverses = state.scannerInstruments?.universes.filter((universe) => universe.enabled || universe.name === selectedUniverseName) ?? [];
   const enabledBaskets = state.scannerInstruments?.baskets.filter((basket) => basket.enabled || basket.name === selectedBasketName) ?? [];
-  const runUniverseLabel = runUniverseMode === "basket"
-    ? selectedBasketName || "Choose basket"
-    : runUniverseMode === "instrument"
-      ? selectedInstrumentKey || "Choose stock"
-      : `${state.scannerInstruments?.count ?? 0} active instruments`;
-  const isRunUniverseReady = runUniverseMode === "all"
+  const runUniverseLabel = runUniverseMode === "universe"
+    ? selectedUniverseName || "Choose universe"
+    : runUniverseMode === "basket"
+      ? selectedBasketName || "Choose basket"
+      : runUniverseMode === "instrument"
+        ? selectedInstrumentKey || "Choose stock"
+        : `${state.scannerInstruments?.count ?? 0} active instruments`;
+  const isRunUniverseReady = (runUniverseMode === "universe" && Boolean(selectedUniverseName))
+    || runUniverseMode === "all"
     || (runUniverseMode === "basket" && Boolean(selectedBasketName))
     || (runUniverseMode === "instrument" && Boolean(selectedInstrumentKey));
   const appendRunQuery = (path: string, sessionDate: string | null) => {
     const params = new URLSearchParams();
     if (sessionDate) {
       params.set("sessionDate", sessionDate);
+    }
+
+    if (runUniverseMode === "universe" && selectedUniverseName) {
+      params.set("universeName", selectedUniverseName);
     }
 
     if (runUniverseMode === "basket" && selectedBasketName) {
@@ -712,22 +935,44 @@ function App() {
     setSidebarCollapsed(false);
     setMenuOpen(true);
   };
-  const navItems = [
-    { href: "#overview", label: "Overview", icon: <Gauge aria-hidden="true" /> },
-    { href: "#pipeline", label: "Pipeline", icon: <PlayCircle aria-hidden="true" /> },
-    { href: "#workflow", label: "Workflow", icon: <ClipboardList aria-hidden="true" /> },
-    { href: "#instruments", label: "Instruments", icon: <Database aria-hidden="true" /> },
-    { href: "#broker", label: "Broker", icon: <ShieldCheck aria-hidden="true" /> },
-    { href: "#monitoring", label: "Monitoring", icon: <Activity aria-hidden="true" /> },
-    { href: "#backtesting", label: "Backtesting", icon: <TrendingUp aria-hidden="true" /> },
-    { href: "#reports", label: "Reports", icon: <LineChart aria-hidden="true" /> },
-    { href: "#settings", label: "Settings", icon: <Gauge aria-hidden="true" /> },
-    { href: "#paper", label: "Paper", icon: <History aria-hidden="true" /> },
-    { href: "#ai", label: "AI", icon: <Siren aria-hidden="true" /> },
-    { href: "#events", label: "Events", icon: <ClipboardList aria-hidden="true" /> },
-    { href: "#notifications", label: "Notifications", icon: <Bell aria-hidden="true" /> },
-    { href: "#lookup", label: "Lookup", icon: <Search aria-hidden="true" /> }
+  const navGroups = [
+    {
+      label: "Command",
+      items: [
+        { href: "#overview", label: "Overview", icon: <Gauge aria-hidden="true" /> },
+        { href: "#pipeline", label: "Run Pipeline", icon: <PlayCircle aria-hidden="true" /> },
+        { href: "#workflow", label: "Readiness", icon: <ClipboardList aria-hidden="true" /> }
+      ]
+    },
+    {
+      label: "Universe",
+      items: [
+        { href: "#instruments", label: "Universe Builder", icon: <Database aria-hidden="true" /> },
+        { href: "#lookup", label: "Lookup", icon: <Search aria-hidden="true" /> }
+      ]
+    },
+    {
+      label: "Results",
+      items: [
+        { href: "#monitoring", label: "Monitoring", icon: <Activity aria-hidden="true" /> },
+        { href: "#backtesting", label: "Backtesting", icon: <TrendingUp aria-hidden="true" /> },
+        { href: "#reports", label: "Reports", icon: <LineChart aria-hidden="true" /> },
+        { href: "#paper", label: "Paper", icon: <History aria-hidden="true" /> },
+        { href: "#ai", label: "AI", icon: <Siren aria-hidden="true" /> }
+      ]
+    },
+    {
+      label: "Operations",
+      items: [
+        { href: "#broker", label: "Broker", icon: <ShieldCheck aria-hidden="true" /> },
+        { href: "#settings", label: "Settings", icon: <Gauge aria-hidden="true" /> },
+        { href: "#events", label: "Events", icon: <ClipboardList aria-hidden="true" /> },
+        { href: "#notifications", label: "Notifications", icon: <Bell aria-hidden="true" /> }
+      ]
+    }
   ];
+  const navItems = navGroups.flatMap((group) => group.items);
+  const activeNavItem = navItems.find((item) => item.href === `#${activeView}`) ?? navItems[0];
 
   return (
     <main className={`dashboard-shell ${isSidebarCollapsed ? "sidebar-collapsed" : ""} ${isMenuOpen ? "menu-open" : ""}`}>
@@ -757,11 +1002,25 @@ function App() {
           <span>{isSidebarCollapsed ? "Expand" : "Collapse"}</span>
         </button>
         <nav aria-label="Dashboard sections">
-          {navItems.map((item) => (
-            <a key={item.href} href={item.href} title={item.label} onClick={() => setMenuOpen(false)}>
-              {item.icon}
-              <span>{item.label}</span>
-            </a>
+          {navGroups.map((group) => (
+            <div className="nav-group" key={group.label}>
+              <span className="nav-group-label">{group.label}</span>
+              {group.items.map((item) => (
+                <a
+                  key={item.href}
+                  href={item.href}
+                  title={item.label}
+                  className={item.href === `#${activeView}` ? "active" : undefined}
+                  onClick={() => {
+                    setActiveView(item.href.slice(1) as DashboardView);
+                    setMenuOpen(false);
+                  }}
+                >
+                  {item.icon}
+                  <span>{item.label}</span>
+                </a>
+              ))}
+            </div>
           ))}
         </nav>
       </aside>
@@ -772,9 +1031,9 @@ function App() {
             <Menu aria-hidden="true" />
           </button>
           <div>
-            <p className="eyebrow">Application workbench</p>
-            <h1>Trading Analysis Workbench</h1>
-            <span className="topbar-subtitle">Manual pipeline runs, editable settings, broker status, historical cache, analysis reports, and notification audit in one place.</span>
+            <p className="eyebrow">Control room</p>
+            <h1>{activeNavItem.label}</h1>
+            <span className="topbar-subtitle">Focused workspace for {activeNavItem.label.toLowerCase()}.</span>
           </div>
           <button className="icon-button" type="button" onClick={() => void loadDashboard()} title="Refresh dashboard" aria-label="Refresh dashboard">
             <RefreshCw aria-hidden="true" />
@@ -788,7 +1047,13 @@ function App() {
           </div>
         )}
 
-        <section className="metrics" id="overview" aria-label="Overview metrics">
+        <section className="control-summary" id="overview" aria-label="Command summary" hidden={activeView !== "overview"}>
+          <InfoCard icon={<Database />} label="Run source" value={runUniverseLabel} detail={isRunUniverseReady ? "Ready for manual run" : "Selection required"} tone={isRunUniverseReady ? "good" : "warn"} />
+          <InfoCard icon={<ShieldCheck />} label="Execution mode" value="Notification-only" detail="No broker order placement" tone="good" />
+          <InfoCard icon={<Activity />} label="Latest activity" value={latestRun ? latestRun.sessionDate : "No EOD run"} detail={latestRun ? `${latestRun.acceptedCount ?? 0} accepted, ${latestRun.rejectedCount ?? 0} rejected` : "Run pipeline to populate"} />
+        </section>
+
+        <section className="metrics" aria-label="Overview metrics" hidden={activeView !== "overview"}>
           <Metric icon={<ShieldCheck />} label="API" value={state.health.toUpperCase()} tone={state.health === "ok" ? "good" : "warn"} />
           <Metric icon={<Gauge />} label="Latest Accepted" value={accepted.toString()} />
           <Metric icon={<Siren />} label="Latest Rejected" value={rejected.toString()} />
@@ -798,12 +1063,12 @@ function App() {
           <Metric icon={<Bell />} label="Notification Failures" value={notificationFailures.toString()} tone={notificationFailures > 0 ? "bad" : "good"} />
         </section>
 
-        <section className="split" id="workflow">
-          <Panel title="Workflow Timeline" action={runDate}>
+        <section className="split" id="workflow" hidden={activeView !== "workflow"}>
+          <Panel title="Pipeline Readiness" action={runDate}>
             <WorkflowTimeline status={state.pipelineStatus} runningStage={runningStage} />
           </Panel>
 
-          <Panel title="Operations Snapshot">
+          <Panel title="Operations">
             <OperationsSnapshot
               settings={state.dataSourceSettings}
               brokerStatuses={state.brokerStatuses}
@@ -813,8 +1078,8 @@ function App() {
           </Panel>
         </section>
 
-        <section className="split" id="pipeline">
-          <Panel title="Manual Pipeline Runs" action="Notification-only">
+        <section className="split" id="pipeline" hidden={activeView !== "pipeline"}>
+          <Panel title="Run Pipeline" action="Notification-only">
             <div className="pipeline-actions">
               <label>
                 Session date
@@ -831,11 +1096,23 @@ function App() {
               <label>
                 Scan universe
                 <select value={runUniverseMode} onChange={(event) => setRunUniverseMode(event.target.value as RunUniverseMode)}>
+                  <option value="universe">Universe</option>
                   <option value="all">All active</option>
                   <option value="basket">Basket</option>
                   <option value="instrument">One stock</option>
                 </select>
               </label>
+              {runUniverseMode === "universe" && (
+                <label>
+                  Universe
+                  <select value={selectedUniverseName} onChange={(event) => setSelectedUniverseName(event.target.value)}>
+                    <option value="">Choose universe</option>
+                    {enabledUniverses.map((universe) => (
+                      <option key={universe.name} value={universe.name}>{universe.name} ({universe.instrumentCount})</option>
+                    ))}
+                  </select>
+                </label>
+              )}
               {runUniverseMode === "basket" && (
                 <label>
                   Basket
@@ -858,22 +1135,40 @@ function App() {
                   </select>
                 </label>
               )}
-              <div className="run-buttons">
-                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runWorkflow()}>Run Workflow</button>
-                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("EOD", "/pipeline/eod/run")}>Run EOD</button>
-                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Pre-market", "/pipeline/pre-market/run")}>Run Pre-market</button>
-                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Opening range", "/pipeline/opening-range/run")}>Run Opening</button>
-                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Live validation", `/pipeline/live-validation/run?from=${fromTime}&to=${toTime}`)}>Run Live</button>
-                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Monitor", `/pipeline/monitor/run?from=${fromTime}&to=${toTime}`)}>Run Monitor</button>
-                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("AI analysis", "/ai/run")}>Run AI</button>
-                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Paper trading", "/paper-trading/run")}>Run Paper</button>
-                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Paper mark-to-market", "/paper-trading/mark-to-market")}>Mark Paper</button>
+              <div className="workflow-run-card">
+                <div>
+                  <span>Recommended flow</span>
+                  <strong>{runUniverseLabel}</strong>
+                  <p>{isRunUniverseReady ? "Runs the ordered scanner flow and stops when a required prerequisite is missing." : "Select a scan source before starting."}</p>
+                </div>
+                <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runWorkflow()}>
+                  Run Workflow
+                </button>
+              </div>
+              <div className="stage-action-groups">
+                <div className="stage-action-group">
+                  <span>Analysis</span>
+                  <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("EOD", "/pipeline/eod/run")}>EOD</button>
+                  <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Pre-market", "/pipeline/pre-market/run")}>Pre-market</button>
+                </div>
+                <div className="stage-action-group">
+                  <span>Validation</span>
+                  <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Opening range", "/pipeline/opening-range/run")}>Opening</button>
+                  <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Live validation", `/pipeline/live-validation/run?from=${fromTime}&to=${toTime}`)}>Live</button>
+                  <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Monitor", `/pipeline/monitor/run?from=${fromTime}&to=${toTime}`)}>Monitor</button>
+                </div>
+                <div className="stage-action-group">
+                  <span>Decision support</span>
+                  <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("AI analysis", "/ai/run")}>AI</button>
+                  <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Paper trading", "/paper-trading/run")}>Paper</button>
+                  <button type="button" disabled={runningStage !== null || !isRunUniverseReady} onClick={() => void runPipelineStage("Paper mark-to-market", "/paper-trading/mark-to-market")}>Mark Paper</button>
+                </div>
               </div>
               <PipelineReadiness status={state.pipelineStatus} />
               <DataSourceReadiness settings={state.dataSourceSettings} />
               <PipelineReadinessChart status={state.pipelineStatus} />
               <p className="run-note">
-                {runningStage ? `Running ${runningStage} for ${runUniverseLabel}...` : runResult ? `${runResult.stage}: ${runResult.status}; evaluated ${runResult.evaluatedCount}, accepted ${runResult.acceptedCount}, rejected ${runResult.rejectedCount}. ${runResult.message}` : isRunUniverseReady ? `Manual runs use ${runUniverseLabel} and never place orders.` : "Choose a basket or stock before running."}
+                {runningStage ? `Running ${runningStage} for ${runUniverseLabel}...` : runResult ? `${runResult.stage}: ${runResult.status}; evaluated ${runResult.evaluatedCount}, accepted ${runResult.acceptedCount}, rejected ${runResult.rejectedCount}. ${runResult.message}` : isRunUniverseReady ? `Manual runs use ${runUniverseLabel} and never place orders.` : "Choose a universe, basket, or stock before running."}
               </p>
             </div>
           </Panel>
@@ -906,17 +1201,34 @@ function App() {
           </Panel>
         </section>
 
-        <section id="instruments">
-          <Panel title="Scanner Baskets" action={state.scannerInstruments ? `${state.scannerInstruments.baskets.filter((basket) => basket.enabled).length}/${state.scannerInstruments.baskets.length} enabled` : "Loading"}>
+        <SectionHeader
+          eyebrow="Universe setup"
+          title="Build the stocks the scanner can see"
+          detail="Create reusable baskets, combine them into universes, and add standalone stocks when a one-off symbol needs to be included."
+          hidden={activeView !== "instruments"}
+        />
+
+        <section id="instruments" hidden={activeView !== "instruments"}>
+          <Panel title="Universe Builder" action={state.scannerInstruments ? `${state.scannerInstruments.universes.filter((universe) => universe.enabled).length}/${state.scannerInstruments.universes.length} enabled` : "Loading"}>
+            <UniverseEditor
+              baskets={state.scannerInstruments?.baskets ?? []}
+              draft={universeDraft}
+              message={universeMessage}
+              onChange={setUniverseDraft}
+              onSave={() => void saveScannerUniverses()}
+            />
+          </Panel>
+          <Panel title="Basket Library" action={state.scannerInstruments ? `${state.scannerInstruments.baskets.filter((basket) => basket.enabled).length}/${state.scannerInstruments.baskets.length} enabled` : "Loading"}>
             <BasketEditor
               baskets={state.scannerInstruments?.baskets ?? []}
               draft={basketDraft}
               message={basketMessage}
               onChange={setBasketDraft}
+              onSeedPredefined={() => void seedPredefinedBaskets()}
               onSave={() => void saveScannerBaskets()}
             />
           </Panel>
-          <Panel title="Active Scanner Instruments" action={state.scannerInstruments ? `${state.scannerInstruments.count} active` : "Loading"}>
+          <Panel title="Standalone Instruments" action={state.scannerInstruments ? `${state.scannerInstruments.count} active` : "Loading"}>
             <InstrumentEditor
               instruments={instrumentDraft}
               message={instrumentMessage}
@@ -926,7 +1238,14 @@ function App() {
           </Panel>
         </section>
 
-        <section className="split" id="stage-details">
+        <SectionHeader
+          eyebrow="Signal review"
+          title="Inspect each decision before acting"
+          detail="Review pre-market, opening-range, live-validation, broker, monitor, and notification records from the latest runs."
+          hidden={activeView !== "broker"}
+        />
+
+        <section className="split" id="stage-details" hidden={activeView !== "broker"}>
           <Panel title="Pre-market Decisions">
             <ReasonSummary decisions={state.preMarketDecisions} />
             <StageDecisionTable decisions={state.preMarketDecisions} emptyText="No pre-market decisions found for latest run." />
@@ -938,7 +1257,7 @@ function App() {
           </Panel>
         </section>
 
-        <section className="split">
+        <section className="split" hidden={activeView !== "broker"}>
           <Panel title="Live-validation Decisions">
             <ReasonSummary decisions={state.liveDecisions} />
             <StageDecisionTable decisions={state.liveDecisions} emptyText="No live-validation decisions found for latest run." />
@@ -959,7 +1278,7 @@ function App() {
           </Panel>
         </section>
 
-        <section className="split" id="monitoring">
+        <section className="split" id="monitoring" hidden={activeView !== "monitoring" && activeView !== "notifications"}>
           <Panel title="Monitor Events">
             <DataTable
               columns={["Symbol", "Direction", "Status", "Last", "Reason"]}
@@ -988,7 +1307,14 @@ function App() {
           </Panel>
         </section>
 
-        <section className="split" id="backtesting">
+        <SectionHeader
+          eyebrow="Reports"
+          title="Measure accuracy and execution history"
+          detail="Use backtests, calibration, exports, paper orders, and AI decisions to understand whether the scanner is improving."
+          hidden={activeView !== "backtesting" && activeView !== "reports"}
+        />
+
+        <section className="split" id="backtesting" hidden={activeView !== "backtesting"}>
           <Panel title="Backtest Accuracy">
             <div className="backtest-runner">
               <label>
@@ -1034,7 +1360,7 @@ function App() {
           </Panel>
         </section>
 
-        <section id="feedback-calibration">
+        <section id="feedback-calibration" hidden={activeView !== "backtesting"}>
           <Panel title="Feedback Calibration">
             <DataTable
               columns={["Source / Recommendation", "Signals", "Win rate", "Avg return", "W/L/F"]}
@@ -1050,7 +1376,7 @@ function App() {
           </Panel>
         </section>
 
-        <section className="split" id="reports">
+        <section className="split" id="reports" hidden={activeView !== "reports"}>
           <Panel title="Historical Execution Report">
             <ExecutionHistory
               scannerRuns={state.scannerRuns}
@@ -1082,7 +1408,7 @@ function App() {
           </Panel>
         </section>
 
-        <section className="split">
+        <section className="split" hidden={activeView !== "reports"}>
           <Panel title="Backtest Reports">
             <DataTable
               columns={["Range", "Signals", "Win rate", "Avg return", "W/L/F/No exit"]}
@@ -1115,8 +1441,15 @@ function App() {
           </Panel>
         </section>
 
-        <section id="settings">
-          <Panel title="Application Settings" action="Non-secret config">
+        <SectionHeader
+          eyebrow="Operations"
+          title="Keep the application ready for market hours"
+          detail="Tune non-secret configuration, inspect event logs, verify notifications, and look up Dhan instrument details."
+          hidden={activeView !== "settings"}
+        />
+
+        <section id="settings" hidden={activeView !== "settings"}>
+          <Panel title="Application Settings" action="Add / update">
             <SettingsEditor
               settings={settingsDraft}
               message={settingsMessage ?? state.applicationSettings?.message}
@@ -1126,7 +1459,7 @@ function App() {
           </Panel>
         </section>
 
-        <section className="split" id="paper">
+        <section className="split" id="paper" hidden={activeView !== "paper"}>
           <Panel title="Paper Trading Runs">
             <DataTable
               columns={["Session", "Orders", "Open", "Closed", "Started"]}
@@ -1160,7 +1493,7 @@ function App() {
           </Panel>
         </section>
 
-        <section className="split" id="ai">
+        <section className="split" id="ai" hidden={activeView !== "ai"}>
           <Panel title="AI Analysis Runs">
             <DataTable
               columns={["Session", "Decisions", "Trade", "Watchlist", "No trade", "Started"]}
@@ -1193,7 +1526,7 @@ function App() {
           </Panel>
         </section>
 
-        <section className="split" id="events">
+        <section className="split" id="events" hidden={activeView !== "events"}>
           <Panel title="Outcome Feedback">
             <DataTable
               columns={["Time", "Symbol", "Source", "Recommendation", "Outcome", "Return", "Notes"]}
@@ -1224,7 +1557,7 @@ function App() {
           </Panel>
         </section>
 
-        <section id="lookup">
+        <section id="lookup" hidden={activeView !== "lookup"}>
           <Panel title="Dhan Instrument Lookup">
             <form className="lookup-form" onSubmit={lookupInstrument}>
               <Search aria-hidden="true" />
@@ -1267,6 +1600,16 @@ function Panel({ title, action, id, children }: { title: string; action?: string
       </header>
       {children}
     </section>
+  );
+}
+
+function SectionHeader({ eyebrow, title, detail, hidden = false }: { eyebrow: string; title: string; detail: string; hidden?: boolean }) {
+  return (
+    <header className="section-header" hidden={hidden}>
+      <span>{eyebrow}</span>
+      <h2>{title}</h2>
+      <p>{detail}</p>
+    </header>
   );
 }
 
@@ -1935,7 +2278,7 @@ function InstrumentLookupInput({
   );
 }
 
-function BasketEditor({
+function UniverseEditor({
   baskets,
   draft,
   message,
@@ -1943,9 +2286,160 @@ function BasketEditor({
   onSave
 }: {
   baskets: ScannerBasket[];
+  draft: ScannerUniverseDraft[];
+  message?: string | null;
+  onChange: (value: ScannerUniverseDraft[]) => void;
+  onSave: () => void;
+}) {
+  const replaceUniverses = (next: ScannerUniverseDraft[]) => onChange(next);
+  const updateUniverse = (index: number, patch: Partial<ScannerUniverseDraft>) =>
+    replaceUniverses(draft.map((universe, currentIndex) => currentIndex === index ? { ...universe, ...patch } : universe));
+  const updateUniverseInstrument = (universeIndex: number, instrumentIndex: number, patch: Partial<ScannerInstrument>) =>
+    updateUniverse(universeIndex, {
+      directInstruments: draft[universeIndex].directInstruments.map((instrument, currentIndex) =>
+        currentIndex === instrumentIndex ? { ...instrument, ...patch } : instrument)
+    });
+  const addUniverse = () =>
+    replaceUniverses([...draft, { name: `Universe ${draft.length + 1}`, enabled: true, basketNames: [], directInstruments: [] }]);
+  const addUniverseInstrument = (universeIndex: number, result: LookupResult) =>
+    updateUniverse(universeIndex, {
+      directInstruments: [...draft[universeIndex].directInstruments, lookupResultToInstrument(result)]
+    });
+  const addBlankUniverseInstrument = (universeIndex: number) =>
+    updateUniverse(universeIndex, {
+      directInstruments: [...draft[universeIndex].directInstruments, { symbol: "", exchange: "Nse", isin: "", securityId: "", key: "" }]
+    });
+  const toggleBasket = (universeIndex: number, basketName: string, checked: boolean) => {
+    const current = draft[universeIndex].basketNames;
+    updateUniverse(universeIndex, {
+      basketNames: checked
+        ? [...current.filter((name) => name !== basketName), basketName]
+        : current.filter((name) => name !== basketName)
+    });
+  };
+
+  return (
+    <div className="instrument-editor">
+      {message && <p className="settings-message">{message}</p>}
+      <div className="instrument-toolbar primary-toolbar">
+        <button type="button" onClick={addUniverse}>Create universe</button>
+        <button type="button" onClick={onSave}>Save universes</button>
+      </div>
+      {draft.length === 0 && (
+        <div className="empty-editor">
+          <strong>No universes in draft</strong>
+          <span>Create a universe, attach baskets or direct stocks, then save.</span>
+          <button type="button" onClick={addUniverse}>Create first universe</button>
+        </div>
+      )}
+      <div className="basket-builder">
+        {draft.map((universe, universeIndex) => (
+          <article className="basket-card" key={`${universe.name}:${universeIndex}`}>
+            <header>
+              <input value={universe.name} onChange={(event) => updateUniverse(universeIndex, { name: event.target.value })} />
+              <label className="toggle-row">
+                <input type="checkbox" checked={universe.enabled} onChange={(event) => updateUniverse(universeIndex, { enabled: event.target.checked })} />
+                Enabled
+              </label>
+              <span className="universe-count">{countUniverseStocks(universe, baskets)} scan stocks</span>
+              <button type="button" className="text-danger" onClick={() => replaceUniverses(draft.filter((_, currentIndex) => currentIndex !== universeIndex))}>Remove universe</button>
+            </header>
+            <div className="universe-summary">
+              <strong>{universe.basketNames.length} baskets selected</strong>
+              <span>{universe.directInstruments.length} direct extras</span>
+              <span>{countUniverseStocks(universe, baskets)} unique stocks will be scanned</span>
+            </div>
+            <div className="basket-picker">
+              {baskets.map((basket) => (
+                <label key={basket.name} className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={universe.basketNames.includes(basket.name)}
+                    onChange={(event) => toggleBasket(universeIndex, basket.name, event.target.checked)}
+                  />
+                  {basket.name} ({basket.instrumentCount})
+                </label>
+              ))}
+            </div>
+            <div className="basket-add-row">
+              <InstrumentLookupInput
+                value=""
+                exchange="Nse"
+                placeholder="Optional direct stock"
+                clearAfterSelect
+                onValueChange={() => undefined}
+                onSelect={(result) => addUniverseInstrument(universeIndex, result)}
+              />
+              <button type="button" onClick={() => addBlankUniverseInstrument(universeIndex)}>Add direct row</button>
+            </div>
+            <div className="table-scroll">
+              <table className="editable-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Exchange</th>
+                    <th>Security ID</th>
+                    <th>ISIN</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {universe.directInstruments.map((instrument, instrumentIndex) => (
+                    <tr key={`${universe.name}:${instrument.exchange}:${instrument.symbol}:${instrumentIndex}`}>
+                      <td>
+                        <InstrumentLookupInput
+                          value={instrument.symbol}
+                          exchange={instrument.exchange}
+                          onValueChange={(value) => updateUniverseInstrument(universeIndex, instrumentIndex, { symbol: value.toUpperCase() })}
+                          onSelect={(result) => updateUniverseInstrument(universeIndex, instrumentIndex, lookupResultToInstrument(result))}
+                        />
+                      </td>
+                      <td>
+                        <select value={instrument.exchange} onChange={(event) => updateUniverseInstrument(universeIndex, instrumentIndex, { exchange: event.target.value })}>
+                          <option value="Nse">NSE</option>
+                          <option value="Bse">BSE</option>
+                        </select>
+                      </td>
+                      <td><input value={instrument.securityId ?? ""} onChange={(event) => updateUniverseInstrument(universeIndex, instrumentIndex, { securityId: event.target.value })} /></td>
+                      <td><input value={instrument.isin ?? ""} onChange={(event) => updateUniverseInstrument(universeIndex, instrumentIndex, { isin: event.target.value.toUpperCase() })} /></td>
+                      <td><button type="button" className="text-danger" onClick={() => updateUniverse(universeIndex, { directInstruments: universe.directInstruments.filter((_, currentIndex) => currentIndex !== instrumentIndex) })}>Remove</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function countUniverseStocks(universe: ScannerUniverseDraft, baskets: ScannerBasket[]): number {
+  const keys = new Set(universe.directInstruments.map((instrument) => instrument.key || `${instrument.exchange}:${instrument.symbol}`.toUpperCase()));
+  for (const basketName of universe.basketNames) {
+    const basket = baskets.find((item) => item.name.toLowerCase() === basketName.toLowerCase());
+    for (const instrument of basket?.instruments.slice(0, basket.maxSymbols <= 0 ? undefined : basket.maxSymbols) ?? []) {
+      keys.add(instrument.key || `${instrument.exchange}:${instrument.symbol}`.toUpperCase());
+    }
+  }
+
+  return keys.size;
+}
+
+function BasketEditor({
+  baskets,
+  draft,
+  message,
+  onChange,
+  onSeedPredefined,
+  onSave
+}: {
+  baskets: ScannerBasket[];
   draft: ScannerBasketDraft[];
   message?: string | null;
   onChange: (value: ScannerBasketDraft[]) => void;
+  onSeedPredefined: () => void;
   onSave: () => void;
 }) {
   const [jsonDraft, setJsonDraft] = React.useState("");
@@ -1993,6 +2487,7 @@ function BasketEditor({
       {message && <p className="settings-message">{message}</p>}
       <div className="instrument-toolbar primary-toolbar">
         <button type="button" onClick={addBasket}>Create basket</button>
+        <button type="button" onClick={onSeedPredefined}>Add predefined baskets</button>
         <button type="button" onClick={() => replaceBaskets([{
           name: "Nifty200",
           enabled: true,
@@ -2127,6 +2622,8 @@ function SettingsEditor({
   onChange: (settings: ApplicationSettings) => void;
   onSave: () => void;
 }) {
+  const [activeSettingsGroup, setActiveSettingsGroup] = React.useState<SettingsGroup>("broker");
+
   if (!settings) {
     return <p className="empty-state">Application settings are loading.</p>;
   }
@@ -2137,12 +2634,60 @@ function SettingsEditor({
     onChange({ ...settings, eodScanner: { ...settings.eodScanner, ...patch } });
   const updateAnalysis = (patch: Partial<ApplicationSettings["analysis"]>) =>
     onChange({ ...settings, analysis: { ...settings.analysis, ...patch } });
+  const updateBroker = (patch: Partial<ApplicationSettings["broker"]>) =>
+    onChange({ ...settings, broker: { ...settings.broker, ...patch } });
+  const updateDhan = (patch: Partial<ApplicationSettings["broker"]["dhan"]>) =>
+    onChange({ ...settings, broker: { ...settings.broker, dhan: { ...settings.broker.dhan, ...patch } } });
+  const updateEodWeight = (key: string, value: number) =>
+    updateEod({ factorWeights: { ...settings.eodScanner.factorWeights, [key]: value } });
+  const updateStage = <T extends keyof ApplicationSettings["stages"]>(stage: T, patch: Partial<ApplicationSettings["stages"][T]>) =>
+    onChange({ ...settings, stages: { ...settings.stages, [stage]: { ...settings.stages[stage], ...patch } } });
+  const updateBacktest = (patch: Partial<ApplicationSettings["backtest"]>) =>
+    onChange({ ...settings, backtest: { ...settings.backtest, ...patch } });
+  const updateAi = (patch: Partial<ApplicationSettings["ai"]>) =>
+    onChange({ ...settings, ai: { ...settings.ai, ...patch } });
+  const updateNotifications = (patch: Partial<ApplicationSettings["notifications"]>) =>
+    onChange({ ...settings, notifications: { ...settings.notifications, ...patch } });
+  const updateTelegram = (patch: Partial<ApplicationSettings["notifications"]["telegram"]>) =>
+    onChange({ ...settings, notifications: { ...settings.notifications, telegram: { ...settings.notifications.telegram, ...patch } } });
+  const updateEmail = (patch: Partial<ApplicationSettings["notifications"]["email"]>) =>
+    onChange({ ...settings, notifications: { ...settings.notifications, email: { ...settings.notifications.email, ...patch } } });
+  const settingsGroups: Array<{ key: SettingsGroup; label: string }> = [
+    { key: "broker", label: "Broker" },
+    { key: "risk", label: "Risk" },
+    { key: "scanner", label: "Scanner" },
+    { key: "data", label: "Data" },
+    { key: "pipeline", label: "Pipeline" },
+    { key: "analytics", label: "Analytics" },
+    { key: "notifications", label: "Notifications" }
+  ];
 
   return (
     <div className="settings-editor">
+      <div className="settings-command">
+        <div>
+          <strong>Add or update application settings</strong>
+          <span>Choose a settings group, edit values, then save. Secret fields are replacement-only and stay masked after save.</span>
+        </div>
+        <button type="button" onClick={onSave}>Save settings</button>
+      </div>
+      <div className="settings-tabs" role="tablist" aria-label="Settings groups">
+        {settingsGroups.map((group) => (
+          <button
+            key={group.key}
+            type="button"
+            role="tab"
+            aria-selected={activeSettingsGroup === group.key}
+            className={activeSettingsGroup === group.key ? "active" : undefined}
+            onClick={() => setActiveSettingsGroup(group.key)}
+          >
+            {group.label}
+          </button>
+        ))}
+      </div>
       {message && <p className="settings-message">{message}</p>}
       <div className="settings-grid">
-        <fieldset>
+        <fieldset hidden={activeSettingsGroup !== "risk"}>
           <legend>Risk and capital</legend>
           <NumberField label="Capital amount" value={settings.risk.capitalAmount} onChange={(value) => updateRisk({ capitalAmount: value })} />
           <NumberField label="Minimum planned risk" value={settings.risk.minPlannedRiskAmount} onChange={(value) => updateRisk({ minPlannedRiskAmount: value })} />
@@ -2154,7 +2699,7 @@ function SettingsEditor({
           </label>
         </fieldset>
 
-        <fieldset>
+        <fieldset hidden={activeSettingsGroup !== "scanner"}>
           <legend>EOD scanner</legend>
           <NumberField label="Lookback days" value={settings.eodScanner.lookbackDays} onChange={(value) => updateEod({ lookbackDays: Math.round(value) })} />
           <NumberField label="Minimum average traded value" value={settings.eodScanner.minimumAverageTradedValue} onChange={(value) => updateEod({ minimumAverageTradedValue: value })} />
@@ -2166,7 +2711,14 @@ function SettingsEditor({
           <NumberField label="Max accepted candidates" value={settings.eodScanner.maxAcceptedCandidates} onChange={(value) => updateEod({ maxAcceptedCandidates: Math.round(value) })} />
         </fieldset>
 
-        <fieldset>
+        <fieldset hidden={activeSettingsGroup !== "scanner"}>
+          <legend>Scanner weights</legend>
+          {Object.entries(settings.eodScanner.factorWeights ?? {}).map(([key, value]) => (
+            <NumberField key={key} label={key} value={value} step={0.1} onChange={(next) => updateEodWeight(key, next)} />
+          ))}
+        </fieldset>
+
+        <fieldset hidden={activeSettingsGroup !== "data"}>
           <legend>Analysis data</legend>
           <label>
             Provider
@@ -2181,6 +2733,136 @@ function SettingsEditor({
           </label>
           <NumberField label="Cache TTL hours" value={settings.analysis.historicalCacheTtlHours} onChange={(value) => updateAnalysis({ historicalCacheTtlHours: Math.round(value) })} />
         </fieldset>
+
+        <fieldset hidden={activeSettingsGroup !== "broker"}>
+          <legend>Broker and Dhan</legend>
+          <label>
+            Broker provider
+            <select value={settings.broker.primaryProvider} onChange={(event) => updateBroker({ primaryProvider: event.target.value })}>
+              <option value="Dhan">Dhan</option>
+              <option value="Zerodha">Zerodha</option>
+              <option value="Groww">Groww</option>
+              <option value="Csv">CSV</option>
+            </select>
+          </label>
+          <label>
+            Dhan base URL
+            <input type="text" value={settings.broker.dhan.baseUrl} onChange={(event) => updateDhan({ baseUrl: event.target.value })} />
+          </label>
+          <label>
+            Dhan client ID
+            <input type="text" value={settings.broker.dhan.clientId} onChange={(event) => updateDhan({ clientId: event.target.value })} />
+          </label>
+          <label>
+            Replace access token
+            <input
+              type="password"
+              value={settings.broker.dhan.accessToken ?? ""}
+              placeholder={settings.broker.dhan.accessTokenMasked}
+              onChange={(event) => updateDhan({ accessToken: event.target.value })}
+            />
+          </label>
+          <label>
+            Dhan instrument type
+            <input type="text" value={settings.broker.dhan.instrumentType} onChange={(event) => updateDhan({ instrumentType: event.target.value })} />
+          </label>
+          <label className="toggle-row">
+            <input type="checkbox" checked={settings.broker.dhan.includeOpenInterest} onChange={(event) => updateDhan({ includeOpenInterest: event.target.checked })} />
+            Include open interest
+          </label>
+          <NumberField label="Retry count" value={settings.broker.dhan.retryCount} onChange={(value) => updateDhan({ retryCount: Math.round(value) })} />
+          <NumberField label="Retry base delay ms" value={settings.broker.dhan.retryBaseDelayMs} onChange={(value) => updateDhan({ retryBaseDelayMs: Math.round(value) })} />
+          <NumberField label="Throttle delay ms" value={settings.broker.dhan.requestThrottleDelayMs} onChange={(value) => updateDhan({ requestThrottleDelayMs: Math.round(value) })} />
+        </fieldset>
+
+        <fieldset hidden={activeSettingsGroup !== "pipeline"}>
+          <legend>Pre-market</legend>
+          <label className="toggle-row"><input type="checkbox" checked={settings.stages.preMarket.enabled} onChange={(event) => updateStage("preMarket", { enabled: event.target.checked })} />Enabled</label>
+          <label className="toggle-row"><input type="checkbox" checked={settings.stages.preMarket.enableScheduledScan} onChange={(event) => updateStage("preMarket", { enableScheduledScan: event.target.checked })} />Scheduled scan</label>
+          <label>Run time<input type="time" value={settings.stages.preMarket.runTimeLocal} onChange={(event) => updateStage("preMarket", { runTimeLocal: event.target.value })} /></label>
+          <NumberField label="Max gap %" value={settings.stages.preMarket.maxAllowedGapPercent} step={0.1} onChange={(value) => updateStage("preMarket", { maxAllowedGapPercent: value })} />
+          <label className="toggle-row"><input type="checkbox" checked={settings.stages.preMarket.allowWhenPreMarketDataUnavailable} onChange={(event) => updateStage("preMarket", { allowWhenPreMarketDataUnavailable: event.target.checked })} />Allow if data unavailable</label>
+        </fieldset>
+
+        <fieldset hidden={activeSettingsGroup !== "pipeline"}>
+          <legend>Opening range</legend>
+          <label className="toggle-row"><input type="checkbox" checked={settings.stages.openingRange.enabled} onChange={(event) => updateStage("openingRange", { enabled: event.target.checked })} />Enabled</label>
+          <label className="toggle-row"><input type="checkbox" checked={settings.stages.openingRange.enableScheduledScan} onChange={(event) => updateStage("openingRange", { enableScheduledScan: event.target.checked })} />Scheduled scan</label>
+          <IntervalField value={settings.stages.openingRange.interval} onChange={(value) => updateStage("openingRange", { interval: value })} />
+          <label>Market open<input type="time" value={settings.stages.openingRange.marketOpenTime} onChange={(event) => updateStage("openingRange", { marketOpenTime: event.target.value })} /></label>
+          <NumberField label="Range minutes" value={settings.stages.openingRange.rangeMinutes} onChange={(value) => updateStage("openingRange", { rangeMinutes: Math.round(value) })} />
+          <NumberField label="Breakout buffer ticks" value={settings.stages.openingRange.breakoutBufferTicks} onChange={(value) => updateStage("openingRange", { breakoutBufferTicks: Math.round(value) })} />
+          <NumberField label="Target R:R" value={settings.stages.openingRange.targetRiskRewardRatio} step={0.1} onChange={(value) => updateStage("openingRange", { targetRiskRewardRatio: value })} />
+          <NumberField label="Max data age minutes" value={settings.stages.openingRange.maxIntradayDataAgeMinutes} onChange={(value) => updateStage("openingRange", { maxIntradayDataAgeMinutes: Math.round(value) })} />
+        </fieldset>
+
+        <fieldset hidden={activeSettingsGroup !== "pipeline"}>
+          <legend>Live validation</legend>
+          <label className="toggle-row"><input type="checkbox" checked={settings.stages.liveValidation.enabled} onChange={(event) => updateStage("liveValidation", { enabled: event.target.checked })} />Enabled</label>
+          <label className="toggle-row"><input type="checkbox" checked={settings.stages.liveValidation.enableScheduledScan} onChange={(event) => updateStage("liveValidation", { enableScheduledScan: event.target.checked })} />Scheduled scan</label>
+          <IntervalField value={settings.stages.liveValidation.interval} onChange={(value) => updateStage("liveValidation", { interval: value })} />
+          <label>Start<input type="time" value={settings.stages.liveValidation.startTime} onChange={(event) => updateStage("liveValidation", { startTime: event.target.value })} /></label>
+          <label>End<input type="time" value={settings.stages.liveValidation.endTime} onChange={(event) => updateStage("liveValidation", { endTime: event.target.value })} /></label>
+          <NumberField label="Poll minutes" value={settings.stages.liveValidation.pollMinutes} onChange={(value) => updateStage("liveValidation", { pollMinutes: Math.round(value) })} />
+          <NumberField label="Confirmation ticks" value={settings.stages.liveValidation.confirmationBufferTicks} onChange={(value) => updateStage("liveValidation", { confirmationBufferTicks: Math.round(value) })} />
+          <NumberField label="Max data age minutes" value={settings.stages.liveValidation.maxIntradayDataAgeMinutes} onChange={(value) => updateStage("liveValidation", { maxIntradayDataAgeMinutes: Math.round(value) })} />
+        </fieldset>
+
+        <fieldset hidden={activeSettingsGroup !== "pipeline"}>
+          <legend>Monitoring</legend>
+          <label className="toggle-row"><input type="checkbox" checked={settings.stages.monitoring.enabled} onChange={(event) => updateStage("monitoring", { enabled: event.target.checked })} />Enabled</label>
+          <label className="toggle-row"><input type="checkbox" checked={settings.stages.monitoring.enableScheduledScan} onChange={(event) => updateStage("monitoring", { enableScheduledScan: event.target.checked })} />Scheduled scan</label>
+          <IntervalField value={settings.stages.monitoring.interval} onChange={(value) => updateStage("monitoring", { interval: value })} />
+          <label>Start<input type="time" value={settings.stages.monitoring.startTime} onChange={(event) => updateStage("monitoring", { startTime: event.target.value })} /></label>
+          <label>End<input type="time" value={settings.stages.monitoring.endTime} onChange={(event) => updateStage("monitoring", { endTime: event.target.value })} /></label>
+          <NumberField label="Poll minutes" value={settings.stages.monitoring.pollMinutes} onChange={(value) => updateStage("monitoring", { pollMinutes: Math.round(value) })} />
+          <NumberField label="Max data age minutes" value={settings.stages.monitoring.maxIntradayDataAgeMinutes} onChange={(value) => updateStage("monitoring", { maxIntradayDataAgeMinutes: Math.round(value) })} />
+        </fieldset>
+
+        <fieldset hidden={activeSettingsGroup !== "analytics"}>
+          <legend>Backtest</legend>
+          <label>Default from<input type="date" value={settings.backtest.fromDate} onChange={(event) => updateBacktest({ fromDate: event.target.value })} /></label>
+          <label>Default to<input type="date" value={settings.backtest.toDate} onChange={(event) => updateBacktest({ toDate: event.target.value })} /></label>
+          <NumberField label="Max holding days" value={settings.backtest.maxHoldingDays} onChange={(value) => updateBacktest({ maxHoldingDays: Math.round(value) })} />
+          <NumberField label="Target R:R" value={settings.backtest.targetRiskRewardRatio} step={0.1} onChange={(value) => updateBacktest({ targetRiskRewardRatio: value })} />
+          <label className="toggle-row"><input type="checkbox" checked={settings.backtest.useStopTargetSimulation} onChange={(event) => updateBacktest({ useStopTargetSimulation: event.target.checked })} />Use stop/target simulation</label>
+          <label className="toggle-row"><input type="checkbox" checked={settings.backtest.assumeStopBeforeTargetWhenBothTouched} onChange={(event) => updateBacktest({ assumeStopBeforeTargetWhenBothTouched: event.target.checked })} />Stop before target if both touched</label>
+        </fieldset>
+
+        <fieldset hidden={activeSettingsGroup !== "analytics"}>
+          <legend>AI analysis</legend>
+          <label className="toggle-row"><input type="checkbox" checked={settings.ai.enabled} onChange={(event) => updateAi({ enabled: event.target.checked })} />Enabled</label>
+          <label>Provider<input type="text" value={settings.ai.provider} onChange={(event) => updateAi({ provider: event.target.value })} /></label>
+          <label>Prompt version<input type="text" value={settings.ai.promptVersion} onChange={(event) => updateAi({ promptVersion: event.target.value })} /></label>
+          <NumberField label="Minimum trade probability" value={settings.ai.minimumTradeProbability} onChange={(value) => updateAi({ minimumTradeProbability: value })} />
+        </fieldset>
+
+        <fieldset hidden={activeSettingsGroup !== "notifications"}>
+          <legend>Notifications</legend>
+          <label>
+            Channel
+            <select value={settings.notifications.channel} onChange={(event) => updateNotifications({ channel: event.target.value })}>
+              <option value="Console">Console</option>
+              <option value="Telegram">Telegram</option>
+              <option value="Email">Email</option>
+            </select>
+          </label>
+          <label className="toggle-row"><input type="checkbox" checked={settings.notifications.sendEodWatchlistNotifications} onChange={(event) => updateNotifications({ sendEodWatchlistNotifications: event.target.checked })} />Send EOD watchlist</label>
+          <NumberField label="Minimum EOD score to notify" value={settings.notifications.minimumEodScoreToNotify} onChange={(value) => updateNotifications({ minimumEodScoreToNotify: value })} />
+          <label>Telegram chat ID<input type="text" value={settings.notifications.telegram.chatId} onChange={(event) => updateTelegram({ chatId: event.target.value })} /></label>
+          <label>Replace Telegram token<input type="password" value={settings.notifications.telegram.botToken ?? ""} placeholder={settings.notifications.telegram.botTokenMasked} onChange={(event) => updateTelegram({ botToken: event.target.value })} /></label>
+        </fieldset>
+
+        <fieldset hidden={activeSettingsGroup !== "notifications"}>
+          <legend>Email</legend>
+          <label>SMTP host<input type="text" value={settings.notifications.email.smtpHost} onChange={(event) => updateEmail({ smtpHost: event.target.value })} /></label>
+          <NumberField label="SMTP port" value={settings.notifications.email.smtpPort} onChange={(value) => updateEmail({ smtpPort: Math.round(value) })} />
+          <label className="toggle-row"><input type="checkbox" checked={settings.notifications.email.useSsl} onChange={(event) => updateEmail({ useSsl: event.target.checked })} />Use SSL</label>
+          <label>Username<input type="text" value={settings.notifications.email.username} onChange={(event) => updateEmail({ username: event.target.value })} /></label>
+          <label>Replace password<input type="password" value={settings.notifications.email.password ?? ""} placeholder={settings.notifications.email.passwordMasked} onChange={(event) => updateEmail({ password: event.target.value })} /></label>
+          <label>From<input type="text" value={settings.notifications.email.from} onChange={(event) => updateEmail({ from: event.target.value })} /></label>
+          <label>To<input type="text" value={settings.notifications.email.to} onChange={(event) => updateEmail({ to: event.target.value })} /></label>
+        </fieldset>
       </div>
       <div className="settings-actions">
         <button type="button" onClick={onSave}>Save settings</button>
@@ -2194,6 +2876,19 @@ function NumberField({ label, value, step = 1, onChange }: { label: string; valu
     <label>
       {label}
       <input type="number" step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+    </label>
+  );
+}
+
+function IntervalField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <label>
+      Interval
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        <option value="OneMinute">One minute</option>
+        <option value="FiveMinutes">Five minutes</option>
+        <option value="FifteenMinutes">Fifteen minutes</option>
+      </select>
     </label>
   );
 }
