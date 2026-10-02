@@ -2,23 +2,37 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
+  AlertTriangle,
   Bell,
+  Check,
   CheckCircle2,
   ClipboardList,
   Database,
   Download,
+  ExternalLink,
   Gauge,
+  Globe,
   History,
+  KeyRound,
   LineChart,
+  Lock,
+  LogIn,
+  LogOut,
+  Mail,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
   PlayCircle,
   RefreshCw,
   Search,
+  Send,
+  Shield,
+  ShieldAlert,
   ShieldCheck,
   Siren,
   TrendingUp,
+  UserPlus,
+  Users,
   WifiOff,
   X
 } from "lucide-react";
@@ -268,6 +282,30 @@ type ScannerUniverseDraft = {
 };
 
 type RunUniverseMode = "universe" | "all" | "basket" | "instrument";
+export type AppUser = {
+  id: string;
+  email: string;
+  name: string;
+  avatarUrl?: string;
+  provider: "google" | "microsoft" | "meta" | "email";
+  role: "Super Admin" | "Trader" | "Operator" | "Viewer";
+  status: "Active" | "Suspended";
+  createdAtUtc: string;
+  lastLoginAtUtc: string;
+};
+
+export type SentEmail = {
+  id: number;
+  to: string;
+  from: string;
+  subject: string;
+  htmlMessage: string;
+  textMessage: string;
+  isSuccess: boolean;
+  attemptedAtUtc: string;
+  errorMessage?: string;
+};
+
 type DashboardView =
   | "overview"
   | "pipeline"
@@ -281,6 +319,7 @@ type DashboardView =
   | "ai"
   | "broker"
   | "settings"
+  | "users"
   | "events"
   | "notifications";
 type SettingsGroup = "broker" | "risk" | "scanner" | "data" | "pipeline" | "analytics" | "notifications";
@@ -298,6 +337,7 @@ const dashboardViews = new Set<DashboardView>([
   "ai",
   "broker",
   "settings",
+  "users",
   "events",
   "notifications"
 ]);
@@ -442,6 +482,7 @@ type ApplicationSettings = {
       chatId: string;
     };
     email: {
+      deliveryMode?: "both" | "smtp" | "inbox";
       smtpHost: string;
       smtpPort: number;
       useSsl: boolean;
@@ -570,19 +611,163 @@ function App() {
   const [runningStage, setRunningStage] = React.useState<string | null>(null);
   const [runResult, setRunResult] = React.useState<PipelineRunResult | null>(null);
   const [lastRefresh, setLastRefresh] = React.useState<Date | null>(null);
+  const [testingNotificationChannel, setTestingNotificationChannel] = React.useState<string | null>(null);
+  const [notificationStatusBanner, setNotificationStatusBanner] = React.useState<{
+    success: boolean;
+    message: string;
+  } | null>(null);
+
+  // Authentication & User Management State
+  const [currentUser, setCurrentUser] = React.useState<AppUser | null>({
+    id: "usr-admin-1",
+    email: "indurotech.jp@gmail.com",
+    name: "InduroTech Admin",
+    avatarUrl: "https://api.dicebear.com/7.x/bottts/svg?seed=indurotech",
+    provider: "google",
+    role: "Super Admin",
+    status: "Active",
+    createdAtUtc: "2026-09-01T00:00:00.000Z",
+    lastLoginAtUtc: new Date().toISOString()
+  });
+  const [users, setUsers] = React.useState<AppUser[]>([]);
+  const [sentEmails, setSentEmails] = React.useState<SentEmail[]>([]);
+  const [isOAuthModalOpen, setIsOAuthModalOpen] = React.useState(false);
+  const [isAddUserModalOpen, setIsAddUserModalOpen] = React.useState(false);
+  const [isEmailViewerOpen, setIsEmailViewerOpen] = React.useState(false);
+
+  const handleSwitchUser = async (email: string) => {
+    try {
+      setActiveUserEmailHeader(email);
+      const res = await postJson<{ success: boolean; user: AppUser }>("/api/auth/switch", { email });
+      if (res.user) {
+        setCurrentUser(res.user);
+      }
+      await loadDashboard();
+    } catch (err: any) {
+      setState((prev) => ({ ...prev, error: err.message || "Failed to switch user" }));
+    }
+  };
+
+  const handleOAuthLogin = async (
+    provider: "google" | "microsoft" | "meta" | "email",
+    email: string,
+    name?: string
+  ) => {
+    try {
+      setActiveUserEmailHeader(email);
+      const res = await postJson<{ success: boolean; user: AppUser }>("/api/auth/oauth-login", {
+        provider,
+        email,
+        name
+      });
+      if (res.user) {
+        setCurrentUser(res.user);
+      }
+      setIsOAuthModalOpen(false);
+      await loadDashboard();
+    } catch (err: any) {
+      setState((prev) => ({ ...prev, error: err.message || "OAuth login failed" }));
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await postJson("/api/auth/logout");
+      setCurrentUser(null);
+      setActiveUserEmailHeader("anonymous");
+      await loadDashboard();
+    } catch {
+      setCurrentUser(null);
+    }
+  };
+
+  const handleAddUser = async (newUser: {
+    name: string;
+    email: string;
+    provider: AppUser["provider"];
+    role: AppUser["role"];
+  }) => {
+    try {
+      const created = await postJson<AppUser>("/api/auth/users", newUser);
+      setUsers((prev) => [...prev, created]);
+      setIsAddUserModalOpen(false);
+      await loadDashboard();
+    } catch (err: any) {
+      setState((prev) => ({ ...prev, error: err.message || "Failed to create user" }));
+    }
+  };
+
+  const handleUpdateRole = async (userId: string, role: AppUser["role"]) => {
+    try {
+      const updated = await putJson<AppUser>(`/api/auth/users/${userId}`, { role });
+      setUsers((prev) => prev.map((u) => (u.id === userId ? updated : u)));
+    } catch (err: any) {
+      setState((prev) => ({ ...prev, error: err.message || "Failed to update role" }));
+    }
+  };
+
+  const handleToggleStatus = async (userId: string) => {
+    const target = users.find((u) => u.id === userId);
+    if (!target) return;
+    const newStatus = target.status === "Active" ? "Suspended" : "Active";
+    try {
+      const updated = await putJson<AppUser>(`/api/auth/users/${userId}`, { status: newStatus });
+      setUsers((prev) => prev.map((u) => (u.id === userId ? updated : u)));
+    } catch (err: any) {
+      setState((prev) => ({ ...prev, error: err.message || "Failed to toggle status" }));
+    }
+  };
+
+  const handleDeleteUser = async (userId: string) => {
+    try {
+      await deleteJson(`/api/auth/users/${userId}`);
+      setUsers((prev) => prev.filter((u) => u.id !== userId));
+    } catch (err: any) {
+      setState((prev) => ({ ...prev, error: err.message || "Failed to delete user" }));
+    }
+  };
+
+  const triggerTestNotification = React.useCallback(async (channelOverride?: string) => {
+    const ch = channelOverride ?? settingsDraft?.notifications?.channel ?? "Both";
+    setTestingNotificationChannel(ch);
+    setNotificationStatusBanner(null);
+    try {
+      const response = await postJson<{
+        success: boolean;
+        message: string;
+        results: Array<{ channel: string; isSuccess: boolean; errorMessage?: string }>;
+      }>(`/notifications/test?channel=${encodeURIComponent(ch)}`);
+
+      setNotificationStatusBanner({
+        success: response.success,
+        message: response.message
+      });
+
+      const [latestAttempts, latestEvents, latestEmails] = await Promise.all([
+        getJson<NotificationAttempt[]>("/notifications/attempts/latest?limit=15"),
+        getJson<EventLogEntry[]>("/events/latest?limit=15"),
+        getJson<SentEmail[]>("/notifications/emails/latest?limit=50").catch(() => [])
+      ]);
+      setState((prev) => ({
+        ...prev,
+        notifications: latestAttempts,
+        eventLogs: latestEvents
+      }));
+      setSentEmails(latestEmails);
+    } catch (err: any) {
+      setNotificationStatusBanner({
+        success: false,
+        message: err.message || "Failed to trigger test notification."
+      });
+    } finally {
+      setTestingNotificationChannel(null);
+    }
+  }, [settingsDraft]);
 
   const loadDashboard = React.useCallback(async () => {
     setState((current) => ({ ...current, loading: true, error: null }));
     try {
-      const applicationSettingsRequest = getJson<ApplicationSettings>("/settings/application");
-      void applicationSettingsRequest
-        .then((applicationSettings) => {
-          setSettingsDraft(applicationSettings);
-          setState((current) => ({ ...current, applicationSettings }));
-        })
-        .catch((error) => {
-          setSettingsMessage(error instanceof Error ? error.message : "Application settings load failed");
-        });
+      const isSettingsAdmin = activeUserEmailHeader.toLowerCase() === "indurotech.jp@gmail.com";
 
       const [
         health,
@@ -604,7 +789,10 @@ function App() {
         scannerInstruments,
         outcomeFeedback,
         events,
-        notifications
+        notifications,
+        usersList,
+        sessionInfo,
+        latestSentEmails
       ] = await Promise.all([
         getJson<{ status: string }>("/health"),
         getJson<RunSummary[]>("/scanner/runs/latest?limit=5"),
@@ -619,14 +807,27 @@ function App() {
         getJson<PaperTradingRun[]>("/paper-trading/runs/latest?limit=5"),
         getJson<AiAnalysisRun[]>("/ai/runs/latest?limit=5"),
         getJson<BrokerStatus[]>("/broker/status"),
-        getJson<DataSourceSettings>("/settings/data-sources"),
-        applicationSettingsRequest,
+        isSettingsAdmin ? getJson<DataSourceSettings>("/settings/data-sources").catch(() => null) : Promise.resolve(null),
+        isSettingsAdmin ? getJson<ApplicationSettings>("/settings/application").catch(() => null) : Promise.resolve(null),
         getJson<PipelineStatus>(`/pipeline/status?sessionDate=${runDate}`),
         getJson<ScannerInstruments>("/scanner/instruments"),
         getJson<OutcomeFeedback[]>("/feedback/outcomes/latest?limit=10"),
         getJson<EventLogEntry[]>("/events/latest?limit=10"),
-        getJson<NotificationAttempt[]>("/notifications/attempts/latest?limit=8")
+        getJson<NotificationAttempt[]>("/notifications/attempts/latest?limit=8"),
+        getJson<AppUser[]>("/api/auth/users").catch(() => []),
+        getJson<{ user: AppUser | null; hasSettingsAccess: boolean }>("/api/auth/session").catch(() => ({ user: null, hasSettingsAccess: false })),
+        getJson<SentEmail[]>("/notifications/emails/latest?limit=50").catch(() => [])
       ]);
+
+      if (usersList && usersList.length > 0) {
+        setUsers(usersList);
+      }
+      if (sessionInfo?.user) {
+        setCurrentUser(sessionInfo.user);
+      }
+      if (latestSentEmails) {
+        setSentEmails(latestSentEmails);
+      }
 
       const latestScannerRun = scannerRuns[0];
       const latestPreMarketRun = preMarketRuns[0];
@@ -716,7 +917,7 @@ function App() {
   }, []);
 
   React.useEffect(() => {
-    if (activeView !== "settings") {
+    if (activeView !== "settings" || activeUserEmailHeader.toLowerCase() !== "indurotech.jp@gmail.com") {
       return;
     }
 
@@ -966,6 +1167,7 @@ function App() {
       items: [
         { href: "#broker", label: "Broker", icon: <ShieldCheck aria-hidden="true" /> },
         { href: "#settings", label: "Settings", icon: <Gauge aria-hidden="true" /> },
+        { href: "#users", label: "User Management", icon: <Users aria-hidden="true" /> },
         { href: "#events", label: "Events", icon: <ClipboardList aria-hidden="true" /> },
         { href: "#notifications", label: "Notifications", icon: <Bell aria-hidden="true" /> }
       ]
@@ -1035,9 +1237,17 @@ function App() {
             <h1>{activeNavItem.label}</h1>
             <span className="topbar-subtitle">Focused workspace for {activeNavItem.label.toLowerCase()}.</span>
           </div>
-          <button className="icon-button" type="button" onClick={() => void loadDashboard()} title="Refresh dashboard" aria-label="Refresh dashboard">
-            <RefreshCw aria-hidden="true" />
-          </button>
+          <div className="topbar-actions" style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
+            <button className="icon-button" type="button" onClick={() => void loadDashboard()} title="Refresh dashboard" aria-label="Refresh dashboard">
+              <RefreshCw aria-hidden="true" />
+            </button>
+            <UserTopbarProfile
+              currentUser={currentUser}
+              onOpenLogin={() => setIsOAuthModalOpen(true)}
+              onSwitchUser={(email) => void handleSwitchUser(email)}
+              onLogout={() => void handleLogout()}
+            />
+          </div>
         </header>
 
         {state.error && (
@@ -1294,13 +1504,62 @@ function App() {
           </Panel>
 
           <Panel title="Notification Attempts" id="notifications">
+            <div className="notification-panel-controls">
+              <div className="notification-actions">
+                <button
+                  type="button"
+                  className="test-btn"
+                  disabled={testingNotificationChannel !== null}
+                  onClick={() => void triggerTestNotification("Telegram")}
+                >
+                  <Send style={{ width: 14, height: 14 }} />
+                  {testingNotificationChannel === "Telegram" ? "Testing Telegram..." : "Test Telegram"}
+                </button>
+                <button
+                  type="button"
+                  className="test-btn"
+                  disabled={testingNotificationChannel !== null}
+                  onClick={() => void triggerTestNotification("Email")}
+                >
+                  <Mail style={{ width: 14, height: 14 }} />
+                  {testingNotificationChannel === "Email" ? "Testing Email..." : "Test Email"}
+                </button>
+                <button
+                  type="button"
+                  className="test-btn test-btn-primary"
+                  disabled={testingNotificationChannel !== null}
+                  onClick={() => void triggerTestNotification("Both")}
+                >
+                  <Bell style={{ width: 14, height: 14 }} />
+                  {testingNotificationChannel === "Both" ? "Testing Both..." : "Test Both Channels"}
+                </button>
+                <button
+                  type="button"
+                  className="test-btn"
+                  style={{ background: "#f0fdf4", borderColor: "#86efac", color: "#166534" }}
+                  onClick={() => setIsEmailViewerOpen(true)}
+                  title="View all rendered HTML emails sent or archived in-app"
+                >
+                  <Mail style={{ width: 14, height: 14 }} />
+                  📬 In-App Email Inbox ({sentEmails.length})
+                </button>
+              </div>
+              {notificationStatusBanner && (
+                <div className={`notification-banner ${notificationStatusBanner.success ? "success" : "warning"}`}>
+                  <span className="banner-icon">{notificationStatusBanner.success ? "✅" : "⚠️"}</span>
+                  <span className="banner-text">{notificationStatusBanner.message}</span>
+                  <button type="button" className="banner-close" onClick={() => setNotificationStatusBanner(null)}>&times;</button>
+                </div>
+              )}
+            </div>
             <DataTable
-              columns={["Time", "Channel", "Status", "Subject"]}
+              columns={["Time", "Channel", "Status", "Subject", "Details"]}
               rows={state.notifications.map((item) => [
-                new Date(item.attemptedAtUtc).toLocaleString(),
+                new Date(item.attemptedAtUtc).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
                 item.channel,
                 item.isSuccess ? "Sent" : "Failed",
-                item.subject
+                item.subject,
+                item.errorMessage ?? "Delivered"
               ])}
               emptyText="No notification attempts found."
             />
@@ -1449,14 +1708,45 @@ function App() {
         />
 
         <section id="settings" hidden={activeView !== "settings"}>
-          <Panel title="Application Settings" action="Add / update">
-            <SettingsEditor
-              settings={settingsDraft}
-              message={settingsMessage ?? state.applicationSettings?.message}
-              onChange={setSettingsDraft}
-              onSave={() => void saveApplicationSettings()}
+          {currentUser?.email.toLowerCase() === "indurotech.jp@gmail.com" ? (
+            <Panel title="Application Settings" action="Add / update">
+              <SettingsEditor
+                settings={settingsDraft}
+                message={settingsMessage ?? state.applicationSettings?.message}
+                onChange={setSettingsDraft}
+                onSave={() => void saveApplicationSettings()}
+                onTestNotification={(ch) => void triggerTestNotification(ch)}
+                testingNotificationChannel={testingNotificationChannel}
+                sentEmailsCount={sentEmails.length}
+                onOpenSentEmails={() => setIsEmailViewerOpen(true)}
+              />
+            </Panel>
+          ) : (
+            <SettingsAccessDeniedScreen
+              currentEmail={currentUser?.email || "anonymous"}
+              currentUserRole={currentUser?.role || "Viewer"}
+              onSwitchToAdmin={() => void handleSwitchUser("indurotech.jp@gmail.com")}
             />
-          </Panel>
+          )}
+        </section>
+
+        <SectionHeader
+          eyebrow="Operations"
+          title="Team Access Control & Identity Management"
+          detail="Manage team accounts, assign intraday trading roles, inspect OAuth authentication providers, and audit clearance."
+          hidden={activeView !== "users"}
+        />
+
+        <section id="users" hidden={activeView !== "users"}>
+          <UserManagementPanel
+            currentUser={currentUser}
+            users={users}
+            onSwitchUser={(email) => void handleSwitchUser(email)}
+            onAddUser={() => setIsAddUserModalOpen(true)}
+            onUpdateRole={(userId, role) => void handleUpdateRole(userId, role)}
+            onToggleStatus={(userId) => void handleToggleStatus(userId)}
+            onDeleteUser={(userId) => void handleDeleteUser(userId)}
+          />
         </section>
 
         <section className="split" id="paper" hidden={activeView !== "paper"}>
@@ -1577,6 +1867,24 @@ function App() {
           </Panel>
         </section>
       </section>
+
+      <OAuthLoginModal
+        isOpen={isOAuthModalOpen}
+        onClose={() => setIsOAuthModalOpen(false)}
+        onOAuthLogin={handleOAuthLogin}
+      />
+
+      <AddUserModal
+        isOpen={isAddUserModalOpen}
+        onClose={() => setIsAddUserModalOpen(false)}
+        onSubmit={handleAddUser}
+      />
+
+      <SentEmailsModal
+        isOpen={isEmailViewerOpen}
+        onClose={() => setIsEmailViewerOpen(false)}
+        sentEmails={sentEmails}
+      />
     </main>
   );
 }
@@ -2611,16 +2919,700 @@ function normalizeExchangeForLookup(exchange: string) {
   return exchange.toUpperCase().startsWith("B") ? "BSE" : "NSE";
 }
 
+function SettingsAccessDeniedScreen({
+  currentEmail,
+  currentUserRole,
+  onSwitchToAdmin
+}: {
+  currentEmail: string;
+  currentUserRole: string;
+  onSwitchToAdmin: () => void;
+}) {
+  return (
+    <div className="access-denied-screen">
+      <div className="access-denied-card">
+        <div className="denied-icon-wrap">
+          <ShieldAlert className="denied-icon" />
+        </div>
+        <h2>Administrative Access Restricted</h2>
+        <p className="denied-subtitle">
+          Per platform security policy, only the designated administrative email is authorized to configure broker connections, risk boundaries, and notification channels.
+        </p>
+
+        <div className="denied-details">
+          <div className="denied-row">
+            <span>Authorized Administrator:</span>
+            <strong style={{ color: "#7c3aed" }}>indurotech.jp@gmail.com</strong>
+          </div>
+          <div className="denied-row">
+            <span>Your Current Account:</span>
+            <span className="current-user-tag">{currentEmail} ({currentUserRole})</span>
+          </div>
+          <div className="denied-row">
+            <span>Clearance Status:</span>
+            <span className="badge-denied">Restricted (Settings Locked)</span>
+          </div>
+        </div>
+
+        <div className="denied-actions">
+          <button type="button" className="btn-switch-admin" onClick={onSwitchToAdmin}>
+            <ShieldCheck style={{ width: 16, height: 16 }} />
+            Switch to indurotech.jp@gmail.com (Super Admin)
+          </button>
+          <a href="#overview" className="btn-back-overview">
+            Return to Dashboard Overview
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UserManagementPanel({
+  currentUser,
+  users,
+  onSwitchUser,
+  onAddUser,
+  onUpdateRole,
+  onToggleStatus,
+  onDeleteUser
+}: {
+  currentUser: AppUser | null;
+  users: AppUser[];
+  onSwitchUser: (email: string) => void;
+  onAddUser: () => void;
+  onUpdateRole: (userId: string, role: AppUser["role"]) => void;
+  onToggleStatus: (userId: string) => void;
+  onDeleteUser: (userId: string) => void;
+}) {
+  const [filterRole, setFilterRole] = React.useState<string>("all");
+  const [filterProvider, setFilterProvider] = React.useState<string>("all");
+
+  const filteredUsers = users.filter((u) => {
+    if (filterRole !== "all" && u.role !== filterRole) return false;
+    if (filterProvider !== "all" && u.provider !== filterProvider) return false;
+    return true;
+  });
+
+  const superAdminCount = users.filter((u) => u.role === "Super Admin").length;
+  const traderCount = users.filter((u) => u.role === "Trader").length;
+  const activeCount = users.filter((u) => u.status === "Active").length;
+
+  return (
+    <div className="users-management-view">
+      <div className="users-metrics-bar">
+        <div className="user-metric-card">
+          <span className="user-metric-num">{users.length}</span>
+          <span className="user-metric-label">Total Users</span>
+        </div>
+        <div className="user-metric-card">
+          <span className="user-metric-num text-emerald">{activeCount}</span>
+          <span className="user-metric-label">Active Users</span>
+        </div>
+        <div className="user-metric-card">
+          <span className="user-metric-num text-purple">{superAdminCount}</span>
+          <span className="user-metric-label">Super Admins</span>
+        </div>
+        <div className="user-metric-card">
+          <span className="user-metric-num text-blue">{traderCount}</span>
+          <span className="user-metric-label">Active Traders</span>
+        </div>
+      </div>
+
+      <div className="security-policy-callout">
+        <ShieldCheck style={{ width: 20, height: 20, flexShrink: 0 }} />
+        <div>
+          <strong>Security Policy Active: Settings Exclusively for indurotech.jp@gmail.com</strong>
+          <p style={{ margin: "4px 0 0", fontSize: 12 }}>
+            The Settings and Broker Configuration panel is strictly restricted to <code>indurotech.jp@gmail.com</code>.
+            Traders, Operators, and Viewers can inspect scanners, paper orders, and notifications, while settings modification remains protected.
+          </p>
+        </div>
+      </div>
+
+      <div className="panel" style={{ padding: 0 }}>
+        <div className="users-toolbar">
+          <div className="users-filters">
+            <label>
+              Role:
+              <select value={filterRole} onChange={(e) => setFilterRole(e.target.value)}>
+                <option value="all">All Roles</option>
+                <option value="Super Admin">Super Admin</option>
+                <option value="Trader">Trader</option>
+                <option value="Operator">Operator</option>
+                <option value="Viewer">Viewer</option>
+              </select>
+            </label>
+            <label>
+              Provider:
+              <select value={filterProvider} onChange={(e) => setFilterProvider(e.target.value)}>
+                <option value="all">All Providers</option>
+                <option value="google">Google / Gmail</option>
+                <option value="microsoft">Microsoft</option>
+                <option value="meta">Meta</option>
+                <option value="email">Email</option>
+              </select>
+            </label>
+          </div>
+          <button type="button" className="btn-add-user" onClick={onAddUser}>
+            <UserPlus style={{ width: 14, height: 14 }} /> Add / Invite User
+          </button>
+        </div>
+
+        <div style={{ overflowX: "auto" }}>
+          <table className="users-table">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Email</th>
+                <th>Provider</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Last Active</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredUsers.map((user) => {
+                const isSuperAdminEmail = user.email.toLowerCase() === "indurotech.jp@gmail.com";
+                const isCurrent = currentUser?.email.toLowerCase() === user.email.toLowerCase();
+
+                return (
+                  <tr key={user.id} className={isCurrent ? "current-user-row" : ""}>
+                    <td className="user-identity-cell">
+                      <img src={user.avatarUrl} alt={user.name} className="user-table-avatar" />
+                      <div>
+                        <strong>{user.name}</strong>
+                        {isCurrent && <span className="current-badge">Active Session</span>}
+                      </div>
+                    </td>
+                    <td><code>{user.email}</code></td>
+                    <td>
+                      <span className={`provider-badge provider-${user.provider}`}>
+                        {user.provider === "google" && "Gmail / Google"}
+                        {user.provider === "microsoft" && "Microsoft"}
+                        {user.provider === "meta" && "Meta"}
+                        {user.provider === "email" && "Email / Pass"}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`role-badge role-${user.role.toLowerCase().replace(" ", "-")}`}>
+                        {user.role}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`status-badge status-${user.status.toLowerCase()}`}>
+                        {user.status}
+                      </span>
+                    </td>
+                    <td>{new Date(user.lastLoginAtUtc).toLocaleDateString()} {new Date(user.lastLoginAtUtc).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                    <td>
+                      <div className="user-row-actions">
+                        {!isCurrent && (
+                          <button
+                            type="button"
+                            className="btn-action-small"
+                            onClick={() => onSwitchUser(user.email)}
+                            title="Switch session to this user to test permissions"
+                          >
+                            Switch To
+                          </button>
+                        )}
+                        {!isSuperAdminEmail && (
+                          <>
+                            <select
+                              value={user.role}
+                              className="role-select-inline"
+                              onChange={(e) => onUpdateRole(user.id, e.target.value as any)}
+                            >
+                              <option value="Trader">Trader</option>
+                              <option value="Operator">Operator</option>
+                              <option value="Viewer">Viewer</option>
+                            </select>
+                            <button
+                              type="button"
+                              className="btn-action-toggle"
+                              onClick={() => onToggleStatus(user.id)}
+                            >
+                              {user.status === "Active" ? "Suspend" : "Activate"}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-action-delete"
+                              onClick={() => onDeleteUser(user.id)}
+                              title="Delete user"
+                            >
+                              &times;
+                            </button>
+                          </>
+                        )}
+                        {isSuperAdminEmail && (
+                          <span className="protected-admin-pill">Settings Clearance</span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UserTopbarProfile({
+  currentUser,
+  onOpenLogin,
+  onSwitchUser,
+  onLogout
+}: {
+  currentUser: AppUser | null;
+  onOpenLogin: () => void;
+  onSwitchUser: (email: string) => void;
+  onLogout: () => void;
+}) {
+  const [isOpen, setIsOpen] = React.useState(false);
+  const ref = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (ref.current && !ref.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  if (!currentUser) {
+    return (
+      <button type="button" className="btn-topbar-signin" onClick={onOpenLogin}>
+        <LogIn style={{ width: 14, height: 14 }} />
+        Sign In
+      </button>
+    );
+  }
+
+  const isSuperAdmin = currentUser.email.toLowerCase() === "indurotech.jp@gmail.com";
+
+  return (
+    <div className="topbar-user-menu-wrap" ref={ref}>
+      <button
+        type="button"
+        className={`topbar-user-btn ${isSuperAdmin ? "admin-border" : ""}`}
+        onClick={() => setIsOpen((prev) => !prev)}
+        aria-expanded={isOpen}
+      >
+        <img src={currentUser.avatarUrl} alt={currentUser.name} className="topbar-avatar" />
+        <div className="topbar-user-copy">
+          <span className="topbar-name">{currentUser.name}</span>
+          <span className={`topbar-role-pill ${isSuperAdmin ? "role-admin" : "role-trader"}`}>
+            {isSuperAdmin ? "Super Admin" : currentUser.role}
+          </span>
+        </div>
+      </button>
+
+      {isOpen && (
+        <div className="topbar-user-dropdown">
+          <div className="dropdown-header">
+            <strong>{currentUser.name}</strong>
+            <span className="dropdown-email">{currentUser.email}</span>
+            <span className="dropdown-provider">Signed in via {currentUser.provider.toUpperCase()}</span>
+          </div>
+
+          <div className="dropdown-section">
+            <span className="dropdown-section-title">Quick RBAC Testing:</span>
+            {!isSuperAdmin ? (
+              <button
+                type="button"
+                className="dropdown-item highlight"
+                onClick={() => {
+                  onSwitchUser("indurotech.jp@gmail.com");
+                  setIsOpen(false);
+                }}
+              >
+                <ShieldCheck style={{ width: 14, height: 14, color: "#10b981" }} />
+                <span>Switch to <strong>indurotech.jp@gmail.com</strong> (Admin)</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="dropdown-item"
+                onClick={() => {
+                  onSwitchUser("tejas.p.singh@gmail.com");
+                  setIsOpen(false);
+                }}
+              >
+                <Users style={{ width: 14, height: 14, color: "#3b82f6" }} />
+                <span>Switch to <strong>tejas.p.singh@gmail.com</strong> (Trader)</span>
+              </button>
+            )}
+          </div>
+
+          <div className="dropdown-footer">
+            <button
+              type="button"
+              className="dropdown-item"
+              onClick={() => {
+                setIsOpen(false);
+                onOpenLogin();
+              }}
+            >
+              <LogIn style={{ width: 14, height: 14 }} />
+              <span>OAuth Sign In / Switch Account</span>
+            </button>
+            <button
+              type="button"
+              className="dropdown-item danger"
+              onClick={() => {
+                setIsOpen(false);
+                onLogout();
+              }}
+            >
+              <LogOut style={{ width: 14, height: 14 }} />
+              <span>Sign Out</span>
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OAuthLoginModal({
+  isOpen,
+  onClose,
+  onOAuthLogin
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onOAuthLogin: (provider: "google" | "microsoft" | "meta" | "email", email: string, name?: string) => void;
+}) {
+  const [customEmail, setCustomEmail] = React.useState("");
+  const [customName, setCustomName] = React.useState("");
+  const [selectedProvider, setSelectedProvider] = React.useState<"google" | "microsoft" | "meta" | "email">("google");
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-content auth-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <h3>Sign in to UniversalEngine</h3>
+            <p className="modal-subtitle">Connect with Google, Microsoft, Meta, or email.</p>
+          </div>
+          <button type="button" className="modal-close" onClick={onClose}>&times;</button>
+        </div>
+
+        <div className="oauth-buttons-list">
+          <button
+            type="button"
+            className="oauth-btn"
+            style={{ background: "#faf5ff", borderColor: "#c084fc" }}
+            onClick={() => onOAuthLogin("google", "indurotech.jp@gmail.com", "InduroTech Admin")}
+          >
+            <svg style={{ width: 20, height: 20 }} viewBox="0 0 24 24">
+              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+            </svg>
+            <div>
+              <strong style={{ display: "block" }}>Sign in with Google / Gmail (Admin)</strong>
+              <small style={{ color: "#7c3aed" }}>indurotech.jp@gmail.com (Super Admin Settings Clearance)</small>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            className="oauth-btn"
+            onClick={() => onOAuthLogin("google", "tejas.p.singh@gmail.com", "Tejas Singh")}
+          >
+            <svg style={{ width: 20, height: 20 }} viewBox="0 0 24 24">
+              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+            </svg>
+            <div>
+              <strong style={{ display: "block" }}>Sign in with Google / Gmail (Trader)</strong>
+              <small style={{ color: "#64748b" }}>tejas.p.singh@gmail.com (Trader Account)</small>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            className="oauth-btn"
+            onClick={() => onOAuthLogin("microsoft", "alex.vance@microsoft.corp", "Alex Vance")}
+          >
+            <svg style={{ width: 18, height: 18 }} viewBox="0 0 23 23">
+              <path fill="#f35325" d="M1 1h10v10H1z" />
+              <path fill="#81bc06" d="M12 1h10v10H12z" />
+              <path fill="#05a6f0" d="M1 12h10v10H1z" />
+              <path fill="#ffba08" d="M12 12h10v10H12z" />
+            </svg>
+            <div>
+              <strong style={{ display: "block" }}>Sign in with Microsoft Account</strong>
+              <small style={{ color: "#64748b" }}>alex.vance@microsoft.corp (Trader)</small>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            className="oauth-btn"
+            onClick={() => onOAuthLogin("meta", "devon.desk@meta.internal", "Devon Miller")}
+          >
+            <svg style={{ width: 20, height: 20 }} viewBox="0 0 24 24" fill="#0081FB">
+              <path d="M12 2C6.477 2 2 6.477 2 12c0 4.991 3.657 9.128 8.438 9.879V14.89h-2.54V12h2.54V9.797c0-2.506 1.492-3.89 3.777-3.89 1.094 0 2.238.195 2.238.195v2.46h-1.26c-1.243 0-1.63.771-1.63 1.562V12h2.773l-.443 2.89h-2.33v6.989C18.343 21.129 22 16.99 22 12c0-5.523-4.477-10-10-10z"/>
+            </svg>
+            <div>
+              <strong style={{ display: "block" }}>Sign in with Meta (Facebook)</strong>
+              <small style={{ color: "#64748b" }}>devon.desk@meta.internal (Operator)</small>
+            </div>
+          </button>
+        </div>
+
+        <div className="auth-separator">
+          <span>or custom identity sign in</span>
+        </div>
+
+        <form
+          className="custom-auth-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (customEmail) {
+              onOAuthLogin(selectedProvider, customEmail, customName || undefined);
+            }
+          }}
+        >
+          <label>
+            Provider
+            <select
+              value={selectedProvider}
+              onChange={(e) => setSelectedProvider(e.target.value as any)}
+            >
+              <option value="google">Google / Gmail</option>
+              <option value="microsoft">Microsoft</option>
+              <option value="meta">Meta</option>
+              <option value="email">Standard Email / Password</option>
+            </select>
+          </label>
+          <label>
+            Full Name (optional)
+            <input
+              type="text"
+              placeholder="e.g. John Doe"
+              value={customName}
+              onChange={(e) => setCustomName(e.target.value)}
+            />
+          </label>
+          <label>
+            Email Address
+            <input
+              type="email"
+              required
+              placeholder="user@example.com"
+              value={customEmail}
+              onChange={(e) => setCustomEmail(e.target.value)}
+            />
+          </label>
+          <button type="submit" className="btn-auth-submit">
+            Authorize & Sign In
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function AddUserModal({
+  isOpen,
+  onClose,
+  onSubmit
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (user: { name: string; email: string; provider: AppUser["provider"]; role: AppUser["role"] }) => void;
+}) {
+  const [name, setName] = React.useState("");
+  const [email, setEmail] = React.useState("");
+  const [provider, setProvider] = React.useState<AppUser["provider"]>("google");
+  const [role, setRole] = React.useState<AppUser["role"]>("Trader");
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-content add-user-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <h3>Add New Platform User</h3>
+            <p className="modal-subtitle">Provision user credentials and role-based permissions.</p>
+          </div>
+          <button type="button" className="modal-close" onClick={onClose}>&times;</button>
+        </div>
+
+        <form
+          className="add-user-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (email) {
+              onSubmit({ name, email, provider, role });
+            }
+          }}
+        >
+          <label>
+            Full Name
+            <input
+              type="text"
+              required
+              placeholder="e.g. Sarah Connor"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </label>
+          <label>
+            Email Address
+            <input
+              type="email"
+              required
+              placeholder="user@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </label>
+          <label>
+            Authentication Provider
+            <select value={provider} onChange={(e) => setProvider(e.target.value as any)}>
+              <option value="google">Google / Gmail</option>
+              <option value="microsoft">Microsoft</option>
+              <option value="meta">Meta</option>
+              <option value="email">Email / Password</option>
+            </select>
+          </label>
+          <label>
+            Assigned Role
+            <select value={role} onChange={(e) => setRole(e.target.value as any)}>
+              <option value="Trader">Trader (Full market scanner & paper trading)</option>
+              <option value="Operator">Operator (Monitor runs & event logs)</option>
+              <option value="Viewer">Viewer (Read-only dashboard view)</option>
+            </select>
+          </label>
+
+          <p className="note-text">
+            * Note: Super Admin status is strictly reserved for <code>indurotech.jp@gmail.com</code> per platform security rules.
+          </p>
+
+          <div className="modal-actions">
+            <button type="button" className="btn-cancel" onClick={onClose}>Cancel</button>
+            <button type="submit" className="btn-save">Create User</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function SentEmailsModal({
+  isOpen,
+  onClose,
+  sentEmails
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  sentEmails: SentEmail[];
+}) {
+  const [selectedEmail, setSelectedEmail] = React.useState<SentEmail | null>(sentEmails[0] ?? null);
+
+  React.useEffect(() => {
+    if (sentEmails.length > 0 && !selectedEmail) {
+      setSelectedEmail(sentEmails[0]);
+    }
+  }, [sentEmails, selectedEmail]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-content emails-outbox-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <h3>Sent Email Notifications Outbox</h3>
+            <p className="modal-subtitle">Inspecting all outgoing SMTP delivery attempts and rendered HTML trade alerts.</p>
+          </div>
+          <button type="button" className="modal-close" onClick={onClose}>&times;</button>
+        </div>
+
+        <div className="outbox-layout">
+          <div className="outbox-list">
+            {sentEmails.length === 0 ? (
+              <p className="empty-state" style={{ padding: 16 }}>No email alerts sent yet. Use "Test Email" in Settings or run a scan.</p>
+            ) : (
+              sentEmails.map((item) => (
+                <div
+                  key={item.id}
+                  className={`outbox-item ${selectedEmail?.id === item.id ? "selected" : ""}`}
+                  onClick={() => setSelectedEmail(item)}
+                >
+                  <div className="outbox-item-top">
+                    <span className={`outbox-status-pill ${item.isSuccess ? "status-sent" : "status-failed"}`}>
+                      {item.isSuccess ? "Sent" : "Failed"}
+                    </span>
+                    <span className="outbox-time">{new Date(item.attemptedAtUtc).toLocaleTimeString()}</span>
+                  </div>
+                  <strong className="outbox-subject">{item.subject}</strong>
+                  <span className="outbox-to">To: {item.to}</span>
+                  {item.errorMessage && <span className="outbox-err">{item.errorMessage}</span>}
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="outbox-preview">
+            {selectedEmail ? (
+              <div className="email-preview-container">
+                <div className="email-meta-header">
+                  <div><strong>Subject:</strong> {selectedEmail.subject}</div>
+                  <div><strong>From:</strong> {selectedEmail.from}</div>
+                  <div><strong>To:</strong> {selectedEmail.to}</div>
+                  <div><strong>Status:</strong> {selectedEmail.isSuccess ? "✅ Delivered" : `⚠️ Failed (${selectedEmail.errorMessage})`}</div>
+                </div>
+                <div className="email-rendered-body" dangerouslySetInnerHTML={{ __html: selectedEmail.htmlMessage }} />
+              </div>
+            ) : (
+              <div className="outbox-preview-placeholder">
+                <Mail style={{ width: 40, height: 40 }} />
+                <p>Select an email alert from the left to inspect the rendered HTML content.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SettingsEditor({
   settings,
   message,
   onChange,
-  onSave
+  onSave,
+  onTestNotification,
+  testingNotificationChannel,
+  sentEmailsCount = 0,
+  onOpenSentEmails
 }: {
   settings: ApplicationSettings | null;
   message?: string | null;
   onChange: (settings: ApplicationSettings) => void;
   onSave: () => void;
+  onTestNotification?: (channel: string) => void;
+  testingNotificationChannel?: string | null;
+  sentEmailsCount?: number;
+  onOpenSentEmails?: () => void;
 }) {
   const [activeSettingsGroup, setActiveSettingsGroup] = React.useState<SettingsGroup>("broker");
 
@@ -2845,23 +3837,142 @@ function SettingsEditor({
               <option value="Console">Console</option>
               <option value="Telegram">Telegram</option>
               <option value="Email">Email</option>
+              <option value="Both">Both (Telegram & Email)</option>
             </select>
           </label>
           <label className="toggle-row"><input type="checkbox" checked={settings.notifications.sendEodWatchlistNotifications} onChange={(event) => updateNotifications({ sendEodWatchlistNotifications: event.target.checked })} />Send EOD watchlist</label>
           <NumberField label="Minimum EOD score to notify" value={settings.notifications.minimumEodScoreToNotify} onChange={(value) => updateNotifications({ minimumEodScoreToNotify: value })} />
           <label>Telegram chat ID<input type="text" value={settings.notifications.telegram.chatId} onChange={(event) => updateTelegram({ chatId: event.target.value })} /></label>
           <label>Replace Telegram token<input type="password" value={settings.notifications.telegram.botToken ?? ""} placeholder={settings.notifications.telegram.botTokenMasked} onChange={(event) => updateTelegram({ botToken: event.target.value })} /></label>
+          <div className="field-action-row">
+            <button
+              type="button"
+              className="test-btn"
+              disabled={testingNotificationChannel !== null}
+              onClick={() => onTestNotification?.("Telegram")}
+            >
+              <Send style={{ width: 14, height: 14 }} />
+              {testingNotificationChannel === "Telegram" ? "Sending Test..." : "Send Test Telegram"}
+            </button>
+          </div>
         </fieldset>
 
         <fieldset hidden={activeSettingsGroup !== "notifications"}>
-          <legend>Email</legend>
+          <legend>Email Notifications</legend>
+
+          <div className="security-policy-callout" style={{ background: "#f8fafc", borderColor: "#cbd5e1", color: "#334155", marginBottom: 14 }}>
+            <div>
+              <strong>⚙️ Settings & Environment Priority:</strong>
+              <p style={{ margin: "3px 0 0", fontSize: 12 }}>
+                Setting environment variables is <strong>optional</strong>. Settings configured and saved here in the dashboard take active precedence over environment defaults. You can also select <em>In-App Virtual Inbox</em> to instantly preview and archive HTML alerts without any external SMTP server.
+              </p>
+            </div>
+          </div>
+
+          <label>
+            Email Delivery Mode
+            <select
+              value={settings.notifications.email.deliveryMode ?? "both"}
+              onChange={(e) => updateEmail({ deliveryMode: e.target.value as any })}
+            >
+              <option value="both">Both (Live SMTP Relay &amp; In-App Virtual Inbox Archive)</option>
+              <option value="inbox">In-App Virtual Inbox Only (Instant preview, zero setup needed)</option>
+              <option value="smtp">External SMTP Server Relay Only</option>
+            </select>
+          </label>
+
+          <div className="smtp-presets">
+            <span className="preset-label">Quick Presets:</span>
+            <button
+              type="button"
+              className="preset-btn"
+              onClick={() =>
+                updateEmail({
+                  deliveryMode: "inbox",
+                  to: "indurotech.jp@gmail.com"
+                })
+              }
+            >
+              Inbox (Safe Sandbox)
+            </button>
+            <button
+              type="button"
+              className="preset-btn"
+              onClick={() =>
+                updateEmail({
+                  deliveryMode: "both",
+                  smtpHost: "smtp.gmail.com",
+                  smtpPort: 587,
+                  useSsl: false,
+                  to: "indurotech.jp@gmail.com"
+                })
+              }
+            >
+              Gmail (587 STARTTLS)
+            </button>
+            <button
+              type="button"
+              className="preset-btn"
+              onClick={() =>
+                updateEmail({
+                  deliveryMode: "both",
+                  smtpHost: "smtp.gmail.com",
+                  smtpPort: 465,
+                  useSsl: true,
+                  to: "indurotech.jp@gmail.com"
+                })
+              }
+            >
+              Gmail SSL (465)
+            </button>
+            <button
+              type="button"
+              className="preset-btn"
+              onClick={() =>
+                updateEmail({
+                  deliveryMode: "both",
+                  smtpHost: "smtp.office365.com",
+                  smtpPort: 587,
+                  useSsl: false,
+                  to: "indurotech.jp@gmail.com"
+                })
+              }
+            >
+              Outlook 365
+            </button>
+          </div>
+
           <label>SMTP host<input type="text" value={settings.notifications.email.smtpHost} onChange={(event) => updateEmail({ smtpHost: event.target.value })} /></label>
           <NumberField label="SMTP port" value={settings.notifications.email.smtpPort} onChange={(value) => updateEmail({ smtpPort: Math.round(value) })} />
-          <label className="toggle-row"><input type="checkbox" checked={settings.notifications.email.useSsl} onChange={(event) => updateEmail({ useSsl: event.target.checked })} />Use SSL</label>
+          <label className="toggle-row"><input type="checkbox" checked={settings.notifications.email.useSsl} onChange={(event) => updateEmail({ useSsl: event.target.checked })} />Use Direct SSL (Port 465 only; leave unchecked for 587 STARTTLS)</label>
           <label>Username<input type="text" value={settings.notifications.email.username} onChange={(event) => updateEmail({ username: event.target.value })} /></label>
           <label>Replace password<input type="password" value={settings.notifications.email.password ?? ""} placeholder={settings.notifications.email.passwordMasked} onChange={(event) => updateEmail({ password: event.target.value })} /></label>
+          <p className="email-advice-note">
+            💡 <strong>Gmail 2-Step Verification:</strong> Generate a 16-character Google App Password at <code>myaccount.google.com/apppasswords</code> to use as password. Standard Google login passwords are not accepted by SMTP.
+          </p>
           <label>From<input type="text" value={settings.notifications.email.from} onChange={(event) => updateEmail({ from: event.target.value })} /></label>
           <label>To<input type="text" value={settings.notifications.email.to} onChange={(event) => updateEmail({ to: event.target.value })} /></label>
+          <div className="field-action-row" style={{ gap: 8, display: "flex", flexWrap: "wrap" }}>
+            <button
+              type="button"
+              className="test-btn"
+              disabled={testingNotificationChannel !== null}
+              onClick={() => onTestNotification?.("Email")}
+            >
+              <Mail style={{ width: 14, height: 14 }} />
+              {testingNotificationChannel === "Email" ? "Sending Test..." : "Send Test Email"}
+            </button>
+            {onOpenSentEmails && (
+              <button
+                type="button"
+                className="test-btn"
+                onClick={onOpenSentEmails}
+              >
+                <ExternalLink style={{ width: 14, height: 14 }} />
+                View Sent Email Outbox ({sentEmailsCount})
+              </button>
+            )}
+          </div>
         </fieldset>
       </div>
       <div className="settings-actions">
@@ -2971,20 +4082,52 @@ function topCounts(counts: Map<string, number>, limit: number) {
     .slice(0, limit);
 }
 
+let activeUserEmailHeader = "indurotech.jp@gmail.com";
+
+export function setActiveUserEmailHeader(email: string) {
+  activeUserEmailHeader = email;
+}
+
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`);
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    headers: { "x-user-email": activeUserEmailHeader }
+  });
   if (!response.ok) {
-    throw new Error(`${path} returned ${response.status}`);
+    let msg = `${path} returned ${response.status}`;
+    try {
+      const data = await response.json();
+      if (data?.message) msg = data.message;
+      else if (data?.error) msg = data.error;
+    } catch {
+      const text = await response.text();
+      if (text) msg = text;
+    }
+    throw new Error(msg);
   }
 
   return response.json() as Promise<T>;
 }
 
-async function postJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, { method: "POST" });
+async function postJson<T>(path: string, body?: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-user-email": activeUserEmailHeader
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`${path} returned ${response.status}${body ? `: ${body}` : ""}`);
+    let msg = `${path} returned ${response.status}`;
+    try {
+      const data = await response.json();
+      if (data?.message) msg = data.message;
+      else if (data?.error) msg = data.error;
+    } catch {
+      const bodyText = await response.text();
+      if (bodyText) msg = `${path} returned ${response.status}: ${bodyText}`;
+    }
+    throw new Error(msg);
   }
 
   return response.json() as Promise<T>;
@@ -2993,12 +4136,40 @@ async function postJson<T>(path: string): Promise<T> {
 async function putJson<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-user-email": activeUserEmailHeader
+    },
     body: JSON.stringify(body)
   });
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${path} returned ${response.status}${text ? `: ${text}` : ""}`);
+    let msg = `${path} returned ${response.status}`;
+    try {
+      const data = await response.json();
+      if (data?.message) msg = data.message;
+      else if (data?.error) msg = data.error;
+    } catch {
+      const text = await response.text();
+      if (text) msg = text;
+    }
+    throw new Error(msg);
+  }
+
+  return response.json() as Promise<T>;
+}
+
+async function deleteJson<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "DELETE",
+    headers: { "x-user-email": activeUserEmailHeader }
+  });
+  if (!response.ok) {
+    let msg = `${path} returned ${response.status}`;
+    try {
+      const data = await response.json();
+      if (data?.message) msg = data.message;
+    } catch {}
+    throw new Error(msg);
   }
 
   return response.json() as Promise<T>;
