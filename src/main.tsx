@@ -3,17 +3,26 @@ import { createRoot } from "react-dom/client";
 import {
   Activity,
   AlertTriangle,
+  ArrowRight,
   Bell,
   Check,
   CheckCircle2,
+  CheckSquare,
+  ChevronDown,
+  ChevronRight,
   ClipboardList,
+  Copy,
   Database,
   Download,
   ExternalLink,
+  Eye,
+  FileText,
+  Filter,
   Gauge,
   Globe,
   History,
   KeyRound,
+  Layers,
   LineChart,
   Lock,
   LogIn,
@@ -22,7 +31,9 @@ import {
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
+  Play,
   PlayCircle,
+  Plus,
   RefreshCw,
   Search,
   Send,
@@ -30,6 +41,10 @@ import {
   ShieldAlert,
   ShieldCheck,
   Siren,
+  Sparkles,
+  Square,
+  Target,
+  Trash2,
   TrendingUp,
   UserPlus,
   Users,
@@ -288,7 +303,7 @@ export type AppUser = {
   name: string;
   avatarUrl?: string;
   provider: "google" | "microsoft" | "meta" | "email";
-  role: "Super Admin" | "Trader" | "Operator" | "Viewer";
+  role: "Super Admin" | "Admin" | "Trader" | "Operator" | "Viewer";
   status: "Active" | "Suspended";
   createdAtUtc: string;
   lastLoginAtUtc: string;
@@ -475,6 +490,8 @@ type ApplicationSettings = {
   notifications: {
     channel: string;
     sendEodWatchlistNotifications: boolean;
+    sendStageNotifications?: boolean;
+    allowDuplicatesWithoutCheck?: boolean;
     minimumEodScoreToNotify: number;
     telegram: {
       botTokenMasked: string;
@@ -612,6 +629,9 @@ function App() {
   const [runResult, setRunResult] = React.useState<PipelineRunResult | null>(null);
   const [lastRefresh, setLastRefresh] = React.useState<Date | null>(null);
   const [testingNotificationChannel, setTestingNotificationChannel] = React.useState<string | null>(null);
+  const [sendWithoutDuplicateCheck, setSendWithoutDuplicateCheck] = React.useState<boolean>(false);
+  const [notifyingCandidateSymbol, setNotifyingCandidateSymbol] = React.useState<string | null>(null);
+  const [broadcastingStage, setBroadcastingStage] = React.useState<string | null>(null);
   const [notificationStatusBanner, setNotificationStatusBanner] = React.useState<{
     success: boolean;
     message: string;
@@ -629,6 +649,13 @@ function App() {
     createdAtUtc: "2026-09-01T00:00:00.000Z",
     lastLoginAtUtc: new Date().toISOString()
   });
+  const isSettingsAdmin = Boolean(
+    currentUser && (
+      currentUser.email.toLowerCase() === "indurotech.jp@gmail.com" ||
+      currentUser.role === "Super Admin" ||
+      currentUser.role === "Admin"
+    )
+  );
   const [users, setUsers] = React.useState<AppUser[]>([]);
   const [sentEmails, setSentEmails] = React.useState<SentEmail[]>([]);
   const [isOAuthModalOpen, setIsOAuthModalOpen] = React.useState(false);
@@ -767,7 +794,11 @@ function App() {
   const loadDashboard = React.useCallback(async () => {
     setState((current) => ({ ...current, loading: true, error: null }));
     try {
-      const isSettingsAdmin = activeUserEmailHeader.toLowerCase() === "indurotech.jp@gmail.com";
+      const isSettingsAdmin = Boolean(
+        activeUserEmailHeader.toLowerCase() === "indurotech.jp@gmail.com" ||
+        currentUser?.role === "Super Admin" ||
+        currentUser?.role === "Admin"
+      );
 
       const [
         health,
@@ -917,7 +948,12 @@ function App() {
   }, []);
 
   React.useEffect(() => {
-    if (activeView !== "settings" || activeUserEmailHeader.toLowerCase() !== "indurotech.jp@gmail.com") {
+    const hasAdminAccess = Boolean(
+      activeUserEmailHeader.toLowerCase() === "indurotech.jp@gmail.com" ||
+      currentUser?.role === "Super Admin" ||
+      currentUser?.role === "Admin"
+    );
+    if (activeView !== "settings" || !hasAdminAccess) {
       return;
     }
 
@@ -1034,6 +1070,91 @@ function App() {
     }
   }
 
+  async function handleSendCandidateNotification(candidate: {
+    symbol: string;
+    exchange?: string;
+    stage?: string;
+    direction?: string;
+    score?: number;
+    entryPrice?: number;
+    stopPrice?: number;
+    targetPrice?: number;
+    finalVerdict?: string;
+    verdictReason?: string;
+    reasonsJson?: string;
+    outcome?: string;
+  }) {
+    setNotifyingCandidateSymbol(candidate.symbol);
+    try {
+      const res = await postJson<{
+        success: boolean;
+        isDuplicate?: boolean;
+        skipDuplicateCheck?: boolean;
+        message: string;
+        results: Array<{ channel: string; isSuccess: boolean; errorMessage?: string }>;
+      }>("/notifications/send-candidate", {
+        symbol: candidate.symbol,
+        exchange: candidate.exchange || "NSE",
+        stage: candidate.stage || "Scanner Result",
+        direction: candidate.direction || "Long",
+        score: candidate.score,
+        entryPrice: candidate.entryPrice,
+        stopPrice: candidate.stopPrice,
+        targetPrice: candidate.targetPrice,
+        finalVerdict: candidate.finalVerdict,
+        verdictReason: candidate.verdictReason,
+        outcome: candidate.outcome,
+        reasons: candidate.reasonsJson ? summarizeReasons(candidate.reasonsJson) : "Technical Setup",
+        skipDuplicateCheck: sendWithoutDuplicateCheck
+      });
+
+      setNotificationStatusBanner({
+        success: res.success,
+        message: res.message
+      });
+
+      void loadDashboard();
+    } catch (err: any) {
+      setNotificationStatusBanner({
+        success: false,
+        message: err.message || "Failed to dispatch candidate notification."
+      });
+    } finally {
+      setNotifyingCandidateSymbol(null);
+    }
+  }
+
+  async function handleBroadcastStageResults(stage: string, items: any[]) {
+    setBroadcastingStage(stage);
+    try {
+      const res = await postJson<{
+        success: boolean;
+        isDuplicate?: boolean;
+        skipDuplicateCheck?: boolean;
+        message: string;
+        results: Array<{ channel: string; isSuccess: boolean; errorMessage?: string }>;
+      }>("/notifications/broadcast-stage-results", {
+        stage,
+        items,
+        skipDuplicateCheck: sendWithoutDuplicateCheck
+      });
+
+      setNotificationStatusBanner({
+        success: res.success,
+        message: res.message
+      });
+
+      void loadDashboard();
+    } catch (err: any) {
+      setNotificationStatusBanner({
+        success: false,
+        message: err.message || `Failed to broadcast ${stage} results.`
+      });
+    } finally {
+      setBroadcastingStage(null);
+    }
+  }
+
   async function saveApplicationSettings() {
     if (!settingsDraft) {
       return;
@@ -1123,6 +1244,10 @@ function App() {
 
     if (runUniverseMode === "instrument" && selectedInstrumentKey) {
       params.set("instrumentKey", selectedInstrumentKey);
+    }
+
+    if (sendWithoutDuplicateCheck) {
+      params.set("skipDuplicateCheck", "true");
     }
 
     const query = params.toString();
@@ -1384,16 +1509,78 @@ function App() {
           </Panel>
 
           <Panel title="Latest EOD Candidates" action={lastRefresh ? `Updated ${lastRefresh.toLocaleTimeString()}` : state.loading ? "Loading" : "Ready"}>
+            <div className="result-notification-toolbar">
+              <div className="duplicate-check-control">
+                <label className="duplicate-checkbox-label" title="When checked, notifications bypass the 10-minute duplicate suppression window.">
+                  <input
+                    type="checkbox"
+                    checked={sendWithoutDuplicateCheck}
+                    onChange={(e) => setSendWithoutDuplicateCheck(e.target.checked)}
+                  />
+                  <span>Send without duplicate check</span>
+                </label>
+                {sendWithoutDuplicateCheck && (
+                  <span className="duplicate-bypass-badge">
+                    ⚡ Duplicate Check Bypassed
+                  </span>
+                )}
+              </div>
+              {isSettingsAdmin && (
+                <button
+                  type="button"
+                  className="btn-broadcast-results"
+                  disabled={broadcastingStage !== null || state.candidates.length === 0}
+                  onClick={() => void handleBroadcastStageResults("EOD", state.candidates)}
+                  title="Broadcast all qualified EOD candidates to configured notification channels"
+                >
+                  <Bell style={{ width: 13, height: 13 }} />
+                  <span>{broadcastingStage === "EOD" ? "Broadcasting..." : `Broadcast EOD Results (${state.candidates.length})`}</span>
+                </button>
+              )}
+            </div>
+
             <DataTable
-              columns={["Symbol", "Direction", "Outcome", "Score", "Verdict", "Reasons"]}
-              rows={state.candidates.map((item) => [
-                `${item.exchange}:${item.symbol}`,
-                item.direction ?? "-",
-                item.outcome,
-                formatNumber(item.score),
-                item.finalVerdict ?? "-",
-                summarizeReasons(item.reasonsJson)
-              ])}
+              columns={isSettingsAdmin
+                ? ["Symbol", "Direction", "Outcome", "Score", "Verdict", "Reasons", "Action"]
+                : ["Symbol", "Direction", "Outcome", "Score", "Verdict", "Reasons"]
+              }
+              rows={state.candidates.map((item) => {
+                const baseRow: React.ReactNode[] = [
+                  `${item.exchange}:${item.symbol}`,
+                  item.direction ?? "-",
+                  item.outcome,
+                  formatNumber(item.score),
+                  item.finalVerdict ?? "-",
+                  summarizeReasons(item.reasonsJson)
+                ];
+
+                if (isSettingsAdmin) {
+                  baseRow.push(
+                    <button
+                      type="button"
+                      className="btn-notify-row"
+                      disabled={notifyingCandidateSymbol === item.symbol}
+                      onClick={() => void handleSendCandidateNotification({
+                        symbol: item.symbol,
+                        exchange: item.exchange,
+                        direction: item.direction,
+                        score: item.score,
+                        finalVerdict: item.finalVerdict,
+                        verdictReason: item.verdictReason,
+                        reasonsJson: item.reasonsJson,
+                        outcome: item.outcome,
+                        stage: "EOD Candidate"
+                      })}
+                      title={`Send notification for ${item.symbol} (${sendWithoutDuplicateCheck ? "Duplicate check bypassed" : "Duplicate check active"})`}
+                    >
+                      <Bell style={{ width: 11, height: 11 }} />
+                      <span>{notifyingCandidateSymbol === item.symbol ? "Sending..." : "Notify"}</span>
+                    </button>
+                  );
+                }
+
+                return baseRow;
+              })}
               emptyText="No persisted scanner candidates yet."
             />
           </Panel>
@@ -1426,6 +1613,12 @@ function App() {
               message={universeMessage}
               onChange={setUniverseDraft}
               onSave={() => void saveScannerUniverses()}
+              onSelectActiveUniverse={(name) => {
+                setSelectedUniverseName(name);
+                setRunUniverseMode("universe");
+                setActiveView("overview");
+              }}
+              activeUniverseName={selectedUniverseName}
             />
           </Panel>
           <Panel title="Basket Library" action={state.scannerInstruments ? `${state.scannerInstruments.baskets.filter((basket) => basket.enabled).length}/${state.scannerInstruments.baskets.length} enabled` : "Loading"}>
@@ -1456,21 +1649,123 @@ function App() {
         />
 
         <section className="split" id="stage-details" hidden={activeView !== "broker"}>
-          <Panel title="Pre-market Decisions">
+          <Panel
+            title="Pre-market Decisions"
+            action={
+              isSettingsAdmin && state.preMarketDecisions.length > 0 ? (
+                <button
+                  type="button"
+                  className="btn-broadcast-results"
+                  style={{ padding: "3px 8px", fontSize: 11 }}
+                  disabled={broadcastingStage !== null}
+                  onClick={() => void handleBroadcastStageResults("Pre-market", state.preMarketDecisions)}
+                  title="Broadcast Pre-market results to notification channels"
+                >
+                  <Bell style={{ width: 11, height: 11 }} />
+                  <span>{broadcastingStage === "Pre-market" ? "Broadcasting..." : `Broadcast (${state.preMarketDecisions.length})`}</span>
+                </button>
+              ) : undefined
+            }
+          >
             <ReasonSummary decisions={state.preMarketDecisions} />
-            <StageDecisionTable decisions={state.preMarketDecisions} emptyText="No pre-market decisions found for latest run." />
+            <StageDecisionTable
+              decisions={state.preMarketDecisions}
+              emptyText="No pre-market decisions found for latest run."
+              isSettingsAdmin={isSettingsAdmin}
+              notifyingSymbol={notifyingCandidateSymbol}
+              onNotify={(item) => void handleSendCandidateNotification({
+                symbol: item.symbol,
+                exchange: item.exchange,
+                direction: item.direction,
+                score: item.score,
+                entryPrice: item.entryPrice,
+                stopPrice: item.stopPrice,
+                targetPrice: item.targetPrice,
+                outcome: item.outcome,
+                reasonsJson: item.reasonsJson,
+                stage: "Pre-market Decision"
+              })}
+            />
           </Panel>
 
-          <Panel title="Opening-range Decisions">
+          <Panel
+            title="Opening-range Decisions"
+            action={
+              isSettingsAdmin && state.openingDecisions.length > 0 ? (
+                <button
+                  type="button"
+                  className="btn-broadcast-results"
+                  style={{ padding: "3px 8px", fontSize: 11 }}
+                  disabled={broadcastingStage !== null}
+                  onClick={() => void handleBroadcastStageResults("Opening range", state.openingDecisions)}
+                  title="Broadcast Opening-range results to notification channels"
+                >
+                  <Bell style={{ width: 11, height: 11 }} />
+                  <span>{broadcastingStage === "Opening range" ? "Broadcasting..." : `Broadcast (${state.openingDecisions.length})`}</span>
+                </button>
+              ) : undefined
+            }
+          >
             <ReasonSummary decisions={state.openingDecisions} />
-            <StageDecisionTable decisions={state.openingDecisions} emptyText="No opening-range decisions found for latest run." />
+            <StageDecisionTable
+              decisions={state.openingDecisions}
+              emptyText="No opening-range decisions found for latest run."
+              isSettingsAdmin={isSettingsAdmin}
+              notifyingSymbol={notifyingCandidateSymbol}
+              onNotify={(item) => void handleSendCandidateNotification({
+                symbol: item.symbol,
+                exchange: item.exchange,
+                direction: item.direction,
+                score: item.score,
+                entryPrice: item.entryPrice,
+                stopPrice: item.stopPrice,
+                targetPrice: item.targetPrice,
+                outcome: item.outcome,
+                reasonsJson: item.reasonsJson,
+                stage: "Opening-range Breakout"
+              })}
+            />
           </Panel>
         </section>
 
         <section className="split" hidden={activeView !== "broker"}>
-          <Panel title="Live-validation Decisions">
+          <Panel
+            title="Live-validation Decisions"
+            action={
+              isSettingsAdmin && state.liveDecisions.length > 0 ? (
+                <button
+                  type="button"
+                  className="btn-broadcast-results"
+                  style={{ padding: "3px 8px", fontSize: 11 }}
+                  disabled={broadcastingStage !== null}
+                  onClick={() => void handleBroadcastStageResults("Live validation", state.liveDecisions)}
+                  title="Broadcast Live-validation results to notification channels"
+                >
+                  <Bell style={{ width: 11, height: 11 }} />
+                  <span>{broadcastingStage === "Live validation" ? "Broadcasting..." : `Broadcast (${state.liveDecisions.length})`}</span>
+                </button>
+              ) : undefined
+            }
+          >
             <ReasonSummary decisions={state.liveDecisions} />
-            <StageDecisionTable decisions={state.liveDecisions} emptyText="No live-validation decisions found for latest run." />
+            <StageDecisionTable
+              decisions={state.liveDecisions}
+              emptyText="No live-validation decisions found for latest run."
+              isSettingsAdmin={isSettingsAdmin}
+              notifyingSymbol={notifyingCandidateSymbol}
+              onNotify={(item) => void handleSendCandidateNotification({
+                symbol: item.symbol,
+                exchange: item.exchange,
+                direction: item.direction,
+                score: item.score,
+                entryPrice: item.entryPrice,
+                stopPrice: item.stopPrice,
+                targetPrice: item.targetPrice,
+                outcome: item.outcome,
+                reasonsJson: item.reasonsJson,
+                stage: "Live Validation"
+              })}
+            />
           </Panel>
 
           <Panel title="Broker Connection Status" id="broker">
@@ -1708,7 +2003,12 @@ function App() {
         />
 
         <section id="settings" hidden={activeView !== "settings"}>
-          {currentUser?.email.toLowerCase() === "indurotech.jp@gmail.com" ? (
+          {Boolean(
+            currentUser &&
+            (currentUser.email.toLowerCase() === "indurotech.jp@gmail.com" ||
+             currentUser.role === "Super Admin" ||
+             currentUser.role === "Admin")
+          ) ? (
             <Panel title="Application Settings" action="Add / update">
               <SettingsEditor
                 settings={settingsDraft}
@@ -1899,12 +2199,12 @@ function Metric({ icon, label, value, tone = "neutral" }: { icon: React.ReactNod
   );
 }
 
-function Panel({ title, action, id, children }: { title: string; action?: string; id?: string; children: React.ReactNode }) {
+function Panel({ title, action, id, children }: { title: string; action?: React.ReactNode; id?: string; children: React.ReactNode }) {
   return (
     <section className="panel" id={id}>
       <header>
         <h2>{title}</h2>
-        {action && <span>{action}</span>}
+        {action && (typeof action === "string" ? <span>{action}</span> : action)}
       </header>
       {children}
     </section>
@@ -2383,7 +2683,7 @@ function CalibrationBars({ rows }: { rows: BacktestCalibrationSummary[] }) {
   );
 }
 
-function DataTable({ columns, rows, emptyText }: { columns: string[]; rows: string[][]; emptyText: string }) {
+function DataTable({ columns, rows, emptyText }: { columns: string[]; rows: (React.ReactNode)[][]; emptyText: string }) {
   if (rows.length === 0) {
     return <p className="empty-state">{emptyText}</p>;
   }
@@ -2398,8 +2698,8 @@ function DataTable({ columns, rows, emptyText }: { columns: string[]; rows: stri
         </thead>
         <tbody>
           {rows.map((row, index) => (
-            <tr key={`${row[0]}-${index}`}>
-              {row.map((cell, cellIndex) => <td key={`${cell}-${cellIndex}`}>{cell}</td>)}
+            <tr key={index}>
+              {row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}
             </tr>
           ))}
         </tbody>
@@ -2586,37 +2886,427 @@ function InstrumentLookupInput({
   );
 }
 
+function getUniverseResolvedStocks(universe: ScannerUniverseDraft, baskets: ScannerBasket[]): Array<{
+  symbol: string;
+  exchange: string;
+  source: string;
+  securityId?: string;
+  isin?: string;
+}> {
+  const map = new Map<string, { symbol: string; exchange: string; source: string; securityId?: string; isin?: string }>();
+
+  // Resolve from attached baskets
+  for (const basketName of universe.basketNames) {
+    const basket = baskets.find((b) => b.name.toLowerCase() === basketName.toLowerCase());
+    if (basket) {
+      const items = basket.instruments.slice(0, basket.maxSymbols <= 0 ? undefined : basket.maxSymbols);
+      for (const inst of items) {
+        const key = `${inst.exchange}:${inst.symbol}`.toUpperCase();
+        if (!map.has(key)) {
+          map.set(key, {
+            symbol: inst.symbol,
+            exchange: inst.exchange || "NSE",
+            source: `Basket: ${basket.name}`,
+            securityId: inst.securityId,
+            isin: inst.isin
+          });
+        }
+      }
+    }
+  }
+
+  // Resolve from direct instruments
+  for (const inst of universe.directInstruments) {
+    if (!inst.symbol) continue;
+    const key = `${inst.exchange}:${inst.symbol}`.toUpperCase();
+    if (!map.has(key)) {
+      map.set(key, {
+        symbol: inst.symbol,
+        exchange: inst.exchange || "NSE",
+        source: "Direct Entry",
+        securityId: inst.securityId,
+        isin: inst.isin
+      });
+    } else {
+      const existing = map.get(key)!;
+      if (!existing.source.includes("Direct")) {
+        existing.source = `${existing.source} + Direct`;
+      }
+    }
+  }
+
+  return [...map.values()];
+}
+
+function countUniverseStocks(universe: ScannerUniverseDraft, baskets: ScannerBasket[]): number {
+  return getUniverseResolvedStocks(universe, baskets).length;
+}
+
+const PRESET_UNIVERSES = [
+  {
+    name: "Nifty 50 Core Momentum",
+    badge: "Large Cap",
+    basketKeywords: ["nifty", "50", "core"],
+    directSymbols: [
+      { symbol: "RELIANCE", exchange: "Nse" },
+      { symbol: "TCS", exchange: "Nse" },
+      { symbol: "HDFCBANK", exchange: "Nse" },
+      { symbol: "INFY", exchange: "Nse" }
+    ]
+  },
+  {
+    name: "High Beta Volatility Alpha",
+    badge: "Breakout",
+    basketKeywords: ["fno", "beta", "momentum"],
+    directSymbols: [
+      { symbol: "TATAMOTORS", exchange: "Nse" },
+      { symbol: "ADANIENT", exchange: "Nse" },
+      { symbol: "BAJFINANCE", exchange: "Nse" }
+    ]
+  },
+  {
+    name: "Banking & Financials Alpha",
+    badge: "Financials",
+    basketKeywords: ["bank", "fin", "nifty"],
+    directSymbols: [
+      { symbol: "SBIN", exchange: "Nse" },
+      { symbol: "ICICIBANK", exchange: "Nse" },
+      { symbol: "KOTAKBANK", exchange: "Nse" },
+      { symbol: "AXISBANK", exchange: "Nse" }
+    ]
+  },
+  {
+    name: "Tech & IT Midcap Titans",
+    badge: "IT Growth",
+    basketKeywords: ["tech", "it", "midcap"],
+    directSymbols: [
+      { symbol: "WIPRO", exchange: "Nse" },
+      { symbol: "HCLTECH", exchange: "Nse" },
+      { symbol: "TECHM", exchange: "Nse" },
+      { symbol: "LTIM", exchange: "Nse" }
+    ]
+  }
+];
+
+function UniverseScanPoolModal({
+  isOpen,
+  onClose,
+  universe,
+  baskets,
+  onSelectActive
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  universe: ScannerUniverseDraft | null;
+  baskets: ScannerBasket[];
+  onSelectActive?: (name: string) => void;
+}) {
+  const [filterQuery, setFilterQuery] = React.useState("");
+  const [copied, setCopied] = React.useState(false);
+
+  if (!isOpen || !universe) return null;
+
+  const resolvedStocks = getUniverseResolvedStocks(universe, baskets);
+  const filteredStocks = resolvedStocks.filter((s) =>
+    s.symbol.toUpperCase().includes(filterQuery.toUpperCase()) ||
+    s.source.toLowerCase().includes(filterQuery.toLowerCase())
+  );
+
+  const handleCopySymbols = () => {
+    const list = resolvedStocks.map((s) => s.symbol).join(", ");
+    void navigator.clipboard?.writeText(list);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-content inspector-modal-content" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <h3>Scan Pool Inspector: {universe.name}</h3>
+            <p className="modal-subtitle">
+              Verified deduplicated scan pool combining {universe.basketNames.length} attached baskets and {universe.directInstruments.length} direct entries.
+            </p>
+          </div>
+          <button type="button" className="modal-close" onClick={onClose}>&times;</button>
+        </div>
+
+        <div className="inspector-stats-row">
+          <div>
+            <strong>{resolvedStocks.length}</strong> Unique Scan Stocks
+          </div>
+          <div>
+            <strong>{universe.basketNames.length}</strong> Baskets Attached
+          </div>
+          <div>
+            <strong>{universe.directInstruments.length}</strong> Direct Standalone
+          </div>
+          <div>
+            Status: <span style={{ color: universe.enabled ? "#15803d" : "#64748b", fontWeight: 700 }}>{universe.enabled ? "Active" : "Paused"}</span>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+          <div className="universe-search-box" style={{ flex: 1, minWidth: 200 }}>
+            <Search style={{ width: 14, height: 14, color: "#64748b" }} />
+            <input
+              type="text"
+              placeholder="Search symbol or source..."
+              value={filterQuery}
+              onChange={(e) => setFilterQuery(e.target.value)}
+            />
+          </div>
+          <button
+            type="button"
+            className="btn-card-action"
+            onClick={handleCopySymbols}
+            title="Copy symbols to clipboard"
+          >
+            {copied ? <Check style={{ width: 14, height: 14, color: "#10b981" }} /> : <Copy style={{ width: 14, height: 14 }} />}
+            <span>{copied ? "Copied!" : "Copy Symbols"}</span>
+          </button>
+          {onSelectActive && (
+            <button
+              type="button"
+              className="btn-card-action btn-target-scanner"
+              onClick={() => {
+                onSelectActive(universe.name);
+                onClose();
+              }}
+            >
+              <Target style={{ width: 14, height: 14 }} />
+              <span>Launch Scan Target</span>
+            </button>
+          )}
+        </div>
+
+        <div className="inspector-table-wrap">
+          <table className="inspector-table">
+            <thead>
+              <tr>
+                <th style={{ width: 40 }}>#</th>
+                <th>Symbol</th>
+                <th>Exchange</th>
+                <th>Source Origin</th>
+                <th>Security ID</th>
+                <th>ISIN</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredStocks.map((stock, idx) => (
+                <tr key={`${stock.exchange}:${stock.symbol}:${idx}`}>
+                  <td style={{ color: "#94a3b8" }}>{idx + 1}</td>
+                  <td><strong>{stock.symbol}</strong></td>
+                  <td><span className="source-badge">{stock.exchange}</span></td>
+                  <td>
+                    <span className={`source-badge ${stock.source.includes("Direct") ? "source-direct" : ""}`}>
+                      {stock.source}
+                    </span>
+                  </td>
+                  <td><code>{stock.securityId || "—"}</code></td>
+                  <td><code style={{ fontSize: 11 }}>{stock.isin || "—"}</code></td>
+                </tr>
+              ))}
+              {filteredStocks.length === 0 && (
+                <tr>
+                  <td colSpan={6} style={{ textAlign: "center", padding: 24, color: "#94a3b8" }}>
+                    No stocks match the search query "{filterQuery}".
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="modal-actions" style={{ marginTop: 14 }}>
+          <button type="button" className="btn-cancel" onClick={onClose}>Close Inspector</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UniverseBulkAddModal({
+  isOpen,
+  onClose,
+  universeName,
+  onImport
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  universeName: string;
+  onImport: (symbols: string[], exchange: "Nse" | "Bse") => void;
+}) {
+  const [rawText, setRawText] = React.useState("");
+  const [exchange, setExchange] = React.useState<"Nse" | "Bse">("Nse");
+
+  if (!isOpen) return null;
+
+  const parsedSymbols = rawText
+    .split(/[\s,;\n\r\t]+/)
+    .map((s) => s.trim().toUpperCase())
+    .filter((s) => s.length > 0 && /^[A-Z0-9\-_&]+$/.test(s));
+
+  const uniqueCount = new Set(parsedSymbols).size;
+
+  const handleAddPresetList = (list: string[]) => {
+    const existing = parsedSymbols;
+    const combined = Array.from(new Set([...existing, ...list]));
+    setRawText(combined.join(", "));
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <h3>Bulk Add Stocks to {universeName}</h3>
+            <p className="modal-subtitle">
+              Paste symbols from watchlist, Excel, or TradingView separated by commas, spaces, or lines.
+            </p>
+          </div>
+          <button type="button" className="modal-close" onClick={onClose}>&times;</button>
+        </div>
+
+        <div className="bulk-symbol-box">
+          <label style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700, color: "#475569" }}>
+            <span>Stock Symbols List:</span>
+            <span>{uniqueCount} valid symbols detected</span>
+          </label>
+          <textarea
+            rows={5}
+            placeholder="e.g. RELIANCE, TCS, INFY, SBIN, HDFCBANK, TATAMOTORS, ICICIBANK"
+            value={rawText}
+            onChange={(e) => setRawText(e.target.value)}
+          />
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "#64748b" }}>Quick Add Presets:</span>
+            <button
+              type="button"
+              className="preset-btn"
+              onClick={() => handleAddPresetList(["TCS", "INFY", "WIPRO", "HCLTECH", "TECHM"])}
+            >
+              + Top IT 5
+            </button>
+            <button
+              type="button"
+              className="preset-btn"
+              onClick={() => handleAddPresetList(["HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK"])}
+            >
+              + Top Banks 5
+            </button>
+            <button
+              type="button"
+              className="preset-btn"
+              onClick={() => handleAddPresetList(["TATAMOTORS", "M&M", "MARUTI", "BAJAJ-AUTO"])}
+            >
+              + Auto 4
+            </button>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
+            <label style={{ fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+              Target Exchange:
+              <select value={exchange} onChange={(e) => setExchange(e.target.value as any)}>
+                <option value="Nse">NSE (National Stock Exchange)</option>
+                <option value="Bse">BSE (Bombay Stock Exchange)</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div className="modal-actions" style={{ marginTop: 14 }}>
+          <button type="button" className="btn-cancel" onClick={onClose}>Cancel</button>
+          <button
+            type="button"
+            className="btn-save"
+            disabled={uniqueCount === 0}
+            onClick={() => {
+              onImport(parsedSymbols, exchange);
+              onClose();
+            }}
+          >
+            Import {uniqueCount} Stock{uniqueCount === 1 ? "" : "s"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function UniverseEditor({
   baskets,
   draft,
   message,
   onChange,
-  onSave
+  onSave,
+  onSelectActiveUniverse,
+  activeUniverseName
 }: {
   baskets: ScannerBasket[];
   draft: ScannerUniverseDraft[];
   message?: string | null;
   onChange: (value: ScannerUniverseDraft[]) => void;
   onSave: () => void;
+  onSelectActiveUniverse?: (name: string) => void;
+  activeUniverseName?: string;
 }) {
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const [filterTab, setFilterTab] = React.useState<"all" | "enabled" | "disabled">("all");
+  const [expandedCards, setExpandedCards] = React.useState<Record<number, boolean>>({});
+  const [detailedTableOpen, setDetailedTableOpen] = React.useState<Record<number, boolean>>({});
+  const [inspectingIndex, setInspectingIndex] = React.useState<number | null>(null);
+  const [bulkAddIndex, setBulkAddIndex] = React.useState<number | null>(null);
+
   const replaceUniverses = (next: ScannerUniverseDraft[]) => onChange(next);
+
   const updateUniverse = (index: number, patch: Partial<ScannerUniverseDraft>) =>
     replaceUniverses(draft.map((universe, currentIndex) => currentIndex === index ? { ...universe, ...patch } : universe));
+
   const updateUniverseInstrument = (universeIndex: number, instrumentIndex: number, patch: Partial<ScannerInstrument>) =>
     updateUniverse(universeIndex, {
       directInstruments: draft[universeIndex].directInstruments.map((instrument, currentIndex) =>
         currentIndex === instrumentIndex ? { ...instrument, ...patch } : instrument)
     });
-  const addUniverse = () =>
-    replaceUniverses([...draft, { name: `Universe ${draft.length + 1}`, enabled: true, basketNames: [], directInstruments: [] }]);
+
+  const addUniverse = () => {
+    const newIdx = draft.length;
+    replaceUniverses([
+      ...draft,
+      {
+        name: `Universe ${newIdx + 1}`,
+        enabled: true,
+        basketNames: baskets.slice(0, 1).map((b) => b.name),
+        directInstruments: []
+      }
+    ]);
+    setExpandedCards((prev) => ({ ...prev, [newIdx]: true }));
+  };
+
+  const duplicateUniverse = (index: number) => {
+    const src = draft[index];
+    const copy: ScannerUniverseDraft = {
+      name: `${src.name} (Copy)`,
+      enabled: src.enabled,
+      basketNames: [...src.basketNames],
+      directInstruments: src.directInstruments.map((inst) => ({ ...inst }))
+    };
+    replaceUniverses([...draft.slice(0, index + 1), copy, ...draft.slice(index + 1)]);
+    setExpandedCards((prev) => ({ ...prev, [index + 1]: true }));
+  };
+
   const addUniverseInstrument = (universeIndex: number, result: LookupResult) =>
     updateUniverse(universeIndex, {
       directInstruments: [...draft[universeIndex].directInstruments, lookupResultToInstrument(result)]
     });
+
   const addBlankUniverseInstrument = (universeIndex: number) =>
     updateUniverse(universeIndex, {
       directInstruments: [...draft[universeIndex].directInstruments, { symbol: "", exchange: "Nse", isin: "", securityId: "", key: "" }]
     });
+
   const toggleBasket = (universeIndex: number, basketName: string, checked: boolean) => {
     const current = draft[universeIndex].basketNames;
     updateUniverse(universeIndex, {
@@ -2626,113 +3316,516 @@ function UniverseEditor({
     });
   };
 
+  const handleBulkImport = (universeIndex: number, symbols: string[], exchange: "Nse" | "Bse") => {
+    const current = draft[universeIndex].directInstruments;
+    const existing = new Set(current.map((i) => `${i.exchange}:${i.symbol}`.toUpperCase()));
+    const toAdd: ScannerInstrument[] = [];
+    for (const sym of symbols) {
+      const key = `${exchange}:${sym}`.toUpperCase();
+      if (!existing.has(key)) {
+        existing.add(key);
+        toAdd.push({
+          symbol: sym,
+          exchange,
+          securityId: "",
+          isin: "",
+          key
+        });
+      }
+    }
+    if (toAdd.length > 0) {
+      updateUniverse(universeIndex, {
+        directInstruments: [...current, ...toAdd]
+      });
+    }
+  };
+
+  const handleApplyPreset = (preset: typeof PRESET_UNIVERSES[0]) => {
+    // Find matching baskets
+    const matchedBaskets = baskets.filter((b) =>
+      preset.basketKeywords.some((kw) => b.name.toLowerCase().includes(kw))
+    );
+    const chosenBaskets = matchedBaskets.length > 0
+      ? matchedBaskets.map((b) => b.name)
+      : baskets.slice(0, 1).map((b) => b.name);
+
+    const newUniverse: ScannerUniverseDraft = {
+      name: preset.name,
+      enabled: true,
+      basketNames: chosenBaskets,
+      directInstruments: preset.directSymbols.map((s) => ({
+        symbol: s.symbol,
+        exchange: s.exchange,
+        securityId: "",
+        isin: "",
+        key: `${s.exchange}:${s.symbol}`.toUpperCase()
+      }))
+    };
+
+    const newIdx = draft.length;
+    replaceUniverses([...draft, newUniverse]);
+    setExpandedCards((prev) => ({ ...prev, [newIdx]: true }));
+  };
+
+  const isCardExpanded = (index: number) => expandedCards[index] !== false;
+  const toggleCardExpanded = (index: number) =>
+    setExpandedCards((prev) => ({ ...prev, [index]: !isCardExpanded(index) }));
+
+  // Metrics
+  const totalUniverses = draft.length;
+  const enabledUniverses = draft.filter((u) => u.enabled).length;
+  const totalCombinedEquities = React.useMemo(() => {
+    const allKeys = new Set<string>();
+    for (const u of draft.filter((univ) => univ.enabled)) {
+      const pool = getUniverseResolvedStocks(u, baskets);
+      for (const item of pool) {
+        allKeys.add(`${item.exchange}:${item.symbol}`.toUpperCase());
+      }
+    }
+    return allKeys.size;
+  }, [draft, baskets]);
+
+  // Filtering
+  const filteredDraftWithIndices = draft
+    .map((universe, originalIndex) => ({ universe, originalIndex }))
+    .filter(({ universe }) => {
+      if (filterTab === "enabled" && !universe.enabled) return false;
+      if (filterTab === "disabled" && universe.enabled) return false;
+      if (!searchQuery.trim()) return true;
+      const q = searchQuery.toLowerCase();
+      if (universe.name.toLowerCase().includes(q)) return true;
+      if (universe.basketNames.some((b) => b.toLowerCase().includes(q))) return true;
+      if (universe.directInstruments.some((d) => d.symbol.toLowerCase().includes(q))) return true;
+      return false;
+    });
+
   return (
-    <div className="instrument-editor">
+    <div className="universe-studio-container">
       {message && <p className="settings-message">{message}</p>}
-      <div className="instrument-toolbar primary-toolbar">
-        <button type="button" onClick={addUniverse}>Create universe</button>
-        <button type="button" onClick={onSave}>Save universes</button>
-      </div>
-      {draft.length === 0 && (
-        <div className="empty-editor">
-          <strong>No universes in draft</strong>
-          <span>Create a universe, attach baskets or direct stocks, then save.</span>
-          <button type="button" onClick={addUniverse}>Create first universe</button>
+
+      {/* Top Studio Metrics Bar */}
+      <div className="universe-metrics-bar">
+        <div className="universe-metric-card">
+          <span className="universe-metric-num">{totalUniverses}</span>
+          <span className="universe-metric-label">{enabledUniverses} Enabled Active</span>
         </div>
-      )}
-      <div className="basket-builder">
-        {draft.map((universe, universeIndex) => (
-          <article className="basket-card" key={`${universe.name}:${universeIndex}`}>
-            <header>
-              <input value={universe.name} onChange={(event) => updateUniverse(universeIndex, { name: event.target.value })} />
-              <label className="toggle-row">
-                <input type="checkbox" checked={universe.enabled} onChange={(event) => updateUniverse(universeIndex, { enabled: event.target.checked })} />
-                Enabled
-              </label>
-              <span className="universe-count">{countUniverseStocks(universe, baskets)} scan stocks</span>
-              <button type="button" className="text-danger" onClick={() => replaceUniverses(draft.filter((_, currentIndex) => currentIndex !== universeIndex))}>Remove universe</button>
-            </header>
-            <div className="universe-summary">
-              <strong>{universe.basketNames.length} baskets selected</strong>
-              <span>{universe.directInstruments.length} direct extras</span>
-              <span>{countUniverseStocks(universe, baskets)} unique stocks will be scanned</span>
-            </div>
-            <div className="basket-picker">
-              {baskets.map((basket) => (
-                <label key={basket.name} className="toggle-row">
-                  <input
-                    type="checkbox"
-                    checked={universe.basketNames.includes(basket.name)}
-                    onChange={(event) => toggleBasket(universeIndex, basket.name, event.target.checked)}
-                  />
-                  {basket.name} ({basket.instrumentCount})
-                </label>
-              ))}
-            </div>
-            <div className="basket-add-row">
-              <InstrumentLookupInput
-                value=""
-                exchange="Nse"
-                placeholder="Optional direct stock"
-                clearAfterSelect
-                onValueChange={() => undefined}
-                onSelect={(result) => addUniverseInstrument(universeIndex, result)}
-              />
-              <button type="button" onClick={() => addBlankUniverseInstrument(universeIndex)}>Add direct row</button>
-            </div>
-            <div className="table-scroll">
-              <table className="editable-table">
-                <thead>
-                  <tr>
-                    <th>Symbol</th>
-                    <th>Exchange</th>
-                    <th>Security ID</th>
-                    <th>ISIN</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {universe.directInstruments.map((instrument, instrumentIndex) => (
-                    <tr key={`${universe.name}:${instrument.exchange}:${instrument.symbol}:${instrumentIndex}`}>
-                      <td>
-                        <InstrumentLookupInput
-                          value={instrument.symbol}
-                          exchange={instrument.exchange}
-                          onValueChange={(value) => updateUniverseInstrument(universeIndex, instrumentIndex, { symbol: value.toUpperCase() })}
-                          onSelect={(result) => updateUniverseInstrument(universeIndex, instrumentIndex, lookupResultToInstrument(result))}
-                        />
-                      </td>
-                      <td>
-                        <select value={instrument.exchange} onChange={(event) => updateUniverseInstrument(universeIndex, instrumentIndex, { exchange: event.target.value })}>
-                          <option value="Nse">NSE</option>
-                          <option value="Bse">BSE</option>
-                        </select>
-                      </td>
-                      <td><input value={instrument.securityId ?? ""} onChange={(event) => updateUniverseInstrument(universeIndex, instrumentIndex, { securityId: event.target.value })} /></td>
-                      <td><input value={instrument.isin ?? ""} onChange={(event) => updateUniverseInstrument(universeIndex, instrumentIndex, { isin: event.target.value.toUpperCase() })} /></td>
-                      <td><button type="button" className="text-danger" onClick={() => updateUniverse(universeIndex, { directInstruments: universe.directInstruments.filter((_, currentIndex) => currentIndex !== instrumentIndex) })}>Remove</button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </article>
+        <div className="universe-metric-card">
+          <span className="universe-metric-num text-emerald" style={{ color: "#10b981" }}>{totalCombinedEquities}</span>
+          <span className="universe-metric-label">Combined Scan Equities</span>
+        </div>
+        <div className="universe-metric-card">
+          <span className="universe-metric-num text-blue" style={{ color: "#3b82f6" }}>{baskets.length}</span>
+          <span className="universe-metric-label">Baskets in Library</span>
+        </div>
+        <div className="universe-metric-card">
+          <span className="universe-metric-num text-purple" style={{ color: "#8b5cf6" }}>
+            {activeUniverseName || "None selected"}
+          </span>
+          <span className="universe-metric-label">Active Scanner Source</span>
+        </div>
+      </div>
+
+      {/* Quick Market Presets Bar */}
+      <div className="universe-presets-banner">
+        <Sparkles style={{ width: 16, height: 16, color: "#166534", flexShrink: 0 }} />
+        <strong>Quick Market Presets:</strong>
+        {PRESET_UNIVERSES.map((preset) => (
+          <button
+            key={preset.name}
+            type="button"
+            className="preset-chip-btn"
+            onClick={() => handleApplyPreset(preset)}
+            title={`Add ${preset.name} (${preset.badge})`}
+          >
+            + {preset.name}
+          </button>
         ))}
       </div>
+
+      {/* Toolbar with Search, Tabs, and Action Buttons */}
+      <div className="universe-toolbar-bar">
+        <div className="universe-search-box">
+          <Search style={{ width: 14, height: 14, color: "#64748b" }} />
+          <input
+            type="text"
+            placeholder="Search universes by name, basket, or stock..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        </div>
+
+        <div className="universe-tabs-nav">
+          <button
+            type="button"
+            className={`universe-tab-btn ${filterTab === "all" ? "active" : ""}`}
+            onClick={() => setFilterTab("all")}
+          >
+            All <span className="tab-count-pill">{draft.length}</span>
+          </button>
+          <button
+            type="button"
+            className={`universe-tab-btn ${filterTab === "enabled" ? "active" : ""}`}
+            onClick={() => setFilterTab("enabled")}
+          >
+            Active <span className="tab-count-pill">{enabledUniverses}</span>
+          </button>
+          <button
+            type="button"
+            className={`universe-tab-btn ${filterTab === "disabled" ? "active" : ""}`}
+            onClick={() => setFilterTab("disabled")}
+          >
+            Paused <span className="tab-count-pill">{draft.length - enabledUniverses}</span>
+          </button>
+        </div>
+
+        <div className="universe-toolbar-actions">
+          <button type="button" className="btn-secondary-action" onClick={addUniverse}>
+            <Plus style={{ width: 14, height: 14 }} />
+            <span>Create Universe</span>
+          </button>
+          <button type="button" className="btn-primary-action" onClick={onSave}>
+            <Check style={{ width: 14, height: 14 }} />
+            <span>Save Universes</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Empty State */}
+      {filteredDraftWithIndices.length === 0 && (
+        <div className="empty-editor">
+          <strong>No matching universes found</strong>
+          <span>
+            {searchQuery ? `No universe matched query "${searchQuery}".` : "Create your first universe or use a Quick Market Preset above."}
+          </span>
+          <button type="button" onClick={addUniverse}>+ Create First Universe</button>
+        </div>
+      )}
+
+      {/* Cards Grid */}
+      <div className="universe-cards-grid">
+        {filteredDraftWithIndices.map(({ universe, originalIndex }) => {
+          const uniqueStocksCount = countUniverseStocks(universe, baskets);
+          const isExpanded = isCardExpanded(originalIndex);
+          const isCurrentActive = activeUniverseName === universe.name;
+
+          // Check overlap between direct instruments and baskets
+          const basketSymbols = new Set<string>();
+          for (const bName of universe.basketNames) {
+            const b = baskets.find((item) => item.name.toLowerCase() === bName.toLowerCase());
+            for (const inst of b?.instruments ?? []) {
+              basketSymbols.add(inst.symbol.toUpperCase());
+            }
+          }
+          const overlapping = universe.directInstruments
+            .filter((d) => basketSymbols.has(d.symbol.toUpperCase()))
+            .map((d) => d.symbol);
+
+          return (
+            <article
+              key={`${universe.name}:${originalIndex}`}
+              className={`universe-card-v2 ${isCurrentActive ? "active-scanner-source" : ""}`}
+            >
+              <header className="universe-card-header">
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 200 }}>
+                  <button
+                    type="button"
+                    className="btn-card-action"
+                    style={{ padding: "4px 6px", border: "none", background: "transparent" }}
+                    onClick={() => toggleCardExpanded(originalIndex)}
+                    title={isExpanded ? "Collapse universe" : "Expand universe"}
+                  >
+                    {isExpanded ? <ChevronDown style={{ width: 16, height: 16 }} /> : <ChevronRight style={{ width: 16, height: 16 }} />}
+                  </button>
+                  <input
+                    className="universe-title-input"
+                    value={universe.name}
+                    placeholder="Universe name..."
+                    onChange={(event) => updateUniverse(originalIndex, { name: event.target.value })}
+                  />
+                </div>
+
+                <div className="universe-card-stats">
+                  <label className="toggle-row" style={{ cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={universe.enabled}
+                      onChange={(event) => updateUniverse(originalIndex, { enabled: event.target.checked })}
+                    />
+                    <span style={{ fontWeight: 700, color: universe.enabled ? "#15803d" : "#64748b" }}>
+                      {universe.enabled ? "Enabled" : "Paused"}
+                    </span>
+                  </label>
+                  <span className="basket-chip-count" style={{ padding: "3px 8px", background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0", fontWeight: 700 }}>
+                    🎯 {uniqueStocksCount} Scan Stocks
+                  </span>
+                  {isCurrentActive && (
+                    <span className="protected-owner-pill" style={{ background: "#ecfdf5", color: "#065f46", border: "1px solid #6ee7b7" }}>
+                      Active Scanner Target
+                    </span>
+                  )}
+                </div>
+              </header>
+
+              {isExpanded && (
+                <>
+                  {/* Baskets Selector Matrix */}
+                  <div style={{ marginTop: 10 }}>
+                    <div className="universe-section-title">
+                      <span>Attached Baskets ({universe.basketNames.length}/{baskets.length}):</span>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button
+                          type="button"
+                          className="btn-action-small"
+                          onClick={() => updateUniverse(originalIndex, { basketNames: baskets.map((b) => b.name) })}
+                        >
+                          Select All
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-action-small"
+                          onClick={() => updateUniverse(originalIndex, { basketNames: [] })}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                    <div className="basket-chips-grid">
+                      {baskets.map((basket) => {
+                        const isSelected = universe.basketNames.includes(basket.name);
+                        return (
+                          <div
+                            key={basket.name}
+                            className={`basket-chip ${isSelected ? "selected" : ""}`}
+                            onClick={() => toggleBasket(originalIndex, basket.name, !isSelected)}
+                          >
+                            <span>{isSelected ? "✓" : "+"}</span>
+                            <span>{basket.name}</span>
+                            <span className="basket-chip-count">{basket.instrumentCount || basket.instruments.length}</span>
+                          </div>
+                        );
+                      })}
+                      {baskets.length === 0 && (
+                        <span style={{ fontSize: 12, color: "#94a3b8" }}>No baskets in library yet. Add one in Basket Library below.</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Direct Instruments Section */}
+                  <div style={{ marginTop: 12 }}>
+                    <div className="universe-section-title">
+                      <span>Direct Standalone Stocks ({universe.directInstruments.length}):</span>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button
+                          type="button"
+                          className="btn-action-small"
+                          onClick={() => setBulkAddIndex(originalIndex)}
+                        >
+                          <FileText style={{ width: 11, height: 11 }} />
+                          <span>Paste / Bulk Add</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-action-small"
+                          onClick={() => setDetailedTableOpen((prev) => ({ ...prev, [originalIndex]: !prev[originalIndex] }))}
+                        >
+                          {detailedTableOpen[originalIndex] ? "Hide Details Table" : "Show ISIN Table"}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+                      <div style={{ flex: 1 }}>
+                        <InstrumentLookupInput
+                          value=""
+                          exchange="Nse"
+                          placeholder="Search Dhan/NSE stock to add directly (e.g. RELIANCE)..."
+                          clearAfterSelect
+                          onValueChange={() => undefined}
+                          onSelect={(result) => addUniverseInstrument(originalIndex, result)}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-secondary-action"
+                        style={{ minHeight: 34, padding: "0 10px", fontSize: 12 }}
+                        onClick={() => addBlankUniverseInstrument(originalIndex)}
+                      >
+                        + Add Custom Row
+                      </button>
+                    </div>
+
+                    {/* Quick Direct Stock Tags */}
+                    {universe.directInstruments.length > 0 && (
+                      <div className="direct-stocks-wrap">
+                        {universe.directInstruments.map((instrument, instrumentIndex) => (
+                          <div
+                            key={`${universe.name}:${instrument.exchange}:${instrument.symbol}:${instrumentIndex}`}
+                            className="direct-stock-tag"
+                          >
+                            <span>{instrument.symbol || "(blank)"}</span>
+                            <span style={{ fontSize: 9, opacity: 0.7 }}>{instrument.exchange}</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateUniverse(originalIndex, {
+                                  directInstruments: universe.directInstruments.filter((_, i) => i !== instrumentIndex)
+                                })
+                              }
+                              title="Remove stock"
+                            >
+                              &times;
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Overlap Hint */}
+                    {overlapping.length > 0 && (
+                      <div style={{ marginTop: 6, fontSize: 11, color: "#854d0e", background: "#fefce8", padding: "4px 8px", borderRadius: 4 }}>
+                        ℹ Note: {overlapping.slice(0, 3).join(", ")}{overlapping.length > 3 ? ` +${overlapping.length - 3} more` : ""} are already included in selected baskets. They will be cleanly deduplicated during scans.
+                      </div>
+                    )}
+
+                    {/* Detailed Editable Table for ISIN & Security ID */}
+                    {detailedTableOpen[originalIndex] && universe.directInstruments.length > 0 && (
+                      <div className="table-scroll" style={{ marginTop: 8, maxHeight: 180 }}>
+                        <table className="editable-table">
+                          <thead>
+                            <tr>
+                              <th>Symbol</th>
+                              <th>Exchange</th>
+                              <th>Security ID</th>
+                              <th>ISIN</th>
+                              <th>Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {universe.directInstruments.map((instrument, instrumentIndex) => (
+                              <tr key={`detailed:${universe.name}:${instrumentIndex}`}>
+                                <td>
+                                  <InstrumentLookupInput
+                                    value={instrument.symbol}
+                                    exchange={instrument.exchange}
+                                    onValueChange={(val) => updateUniverseInstrument(originalIndex, instrumentIndex, { symbol: val.toUpperCase() })}
+                                    onSelect={(res) => updateUniverseInstrument(originalIndex, instrumentIndex, lookupResultToInstrument(res))}
+                                  />
+                                </td>
+                                <td>
+                                  <select
+                                    value={instrument.exchange}
+                                    onChange={(e) => updateUniverseInstrument(originalIndex, instrumentIndex, { exchange: e.target.value })}
+                                  >
+                                    <option value="Nse">NSE</option>
+                                    <option value="Bse">BSE</option>
+                                  </select>
+                                </td>
+                                <td>
+                                  <input
+                                    value={instrument.securityId ?? ""}
+                                    placeholder="Security ID"
+                                    onChange={(e) => updateUniverseInstrument(originalIndex, instrumentIndex, { securityId: e.target.value })}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    value={instrument.isin ?? ""}
+                                    placeholder="ISIN"
+                                    onChange={(e) => updateUniverseInstrument(originalIndex, instrumentIndex, { isin: e.target.value.toUpperCase() })}
+                                  />
+                                </td>
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="text-danger"
+                                    onClick={() =>
+                                      updateUniverse(originalIndex, {
+                                        directInstruments: universe.directInstruments.filter((_, i) => i !== instrumentIndex)
+                                      })
+                                    }
+                                  >
+                                    Remove
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* Card Footer Actions */}
+              <footer className="universe-card-footer">
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="btn-card-action btn-target-scanner"
+                    onClick={() => onSelectActiveUniverse && onSelectActiveUniverse(universe.name)}
+                    title="Set this universe as the active scanner target and open the scan panel"
+                  >
+                    <Target style={{ width: 13, height: 13 }} />
+                    <span>Launch Scan Target</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-card-action"
+                    onClick={() => setInspectingIndex(originalIndex)}
+                    title="Inspect resolved stocks in this universe"
+                  >
+                    <Eye style={{ width: 13, height: 13 }} />
+                    <span>Inspect Pool ({uniqueStocksCount})</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-card-action"
+                    onClick={() => duplicateUniverse(originalIndex)}
+                    title="Clone this universe"
+                  >
+                    <Copy style={{ width: 13, height: 13 }} />
+                    <span>Clone</span>
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  className="btn-card-action btn-card-delete"
+                  onClick={() => replaceUniverses(draft.filter((_, i) => i !== originalIndex))}
+                  title="Delete this universe"
+                >
+                  <Trash2 style={{ width: 13, height: 13 }} />
+                  <span>Delete</span>
+                </button>
+              </footer>
+            </article>
+          );
+        })}
+      </div>
+
+      {/* Scan Pool Modal */}
+      {inspectingIndex !== null && draft[inspectingIndex] && (
+        <UniverseScanPoolModal
+          isOpen={true}
+          universe={draft[inspectingIndex]}
+          baskets={baskets}
+          onClose={() => setInspectingIndex(null)}
+          onSelectActive={onSelectActiveUniverse}
+        />
+      )}
+
+      {/* Bulk Add Modal */}
+      {bulkAddIndex !== null && draft[bulkAddIndex] && (
+        <UniverseBulkAddModal
+          isOpen={true}
+          universeName={draft[bulkAddIndex].name}
+          onClose={() => setBulkAddIndex(null)}
+          onImport={(symbols, ex) => handleBulkImport(bulkAddIndex, symbols, ex)}
+        />
+      )}
     </div>
   );
-}
-
-function countUniverseStocks(universe: ScannerUniverseDraft, baskets: ScannerBasket[]): number {
-  const keys = new Set(universe.directInstruments.map((instrument) => instrument.key || `${instrument.exchange}:${instrument.symbol}`.toUpperCase()));
-  for (const basketName of universe.basketNames) {
-    const basket = baskets.find((item) => item.name.toLowerCase() === basketName.toLowerCase());
-    for (const instrument of basket?.instruments.slice(0, basket.maxSymbols <= 0 ? undefined : basket.maxSymbols) ?? []) {
-      keys.add(instrument.key || `${instrument.exchange}:${instrument.symbol}`.toUpperCase());
-    }
-  }
-
-  return keys.size;
 }
 
 function BasketEditor({
@@ -2987,6 +4080,7 @@ function UserManagementPanel({
 }) {
   const [filterRole, setFilterRole] = React.useState<string>("all");
   const [filterProvider, setFilterProvider] = React.useState<string>("all");
+  const [notification, setNotification] = React.useState<string | null>(null);
 
   const filteredUsers = users.filter((u) => {
     if (filterRole !== "all" && u.role !== filterRole) return false;
@@ -2994,9 +4088,15 @@ function UserManagementPanel({
     return true;
   });
 
-  const superAdminCount = users.filter((u) => u.role === "Super Admin").length;
+  const adminCount = users.filter((u) => u.role === "Admin" || u.role === "Super Admin").length;
   const traderCount = users.filter((u) => u.role === "Trader").length;
   const activeCount = users.filter((u) => u.status === "Active").length;
+
+  const handleRoleUpdate = (userId: string, targetName: string, role: AppUser["role"]) => {
+    onUpdateRole(userId, role);
+    setNotification(`Successfully assigned ${role} role to ${targetName}.`);
+    setTimeout(() => setNotification(null), 3500);
+  };
 
   return (
     <div className="users-management-view">
@@ -3010,8 +4110,8 @@ function UserManagementPanel({
           <span className="user-metric-label">Active Users</span>
         </div>
         <div className="user-metric-card">
-          <span className="user-metric-num text-purple">{superAdminCount}</span>
-          <span className="user-metric-label">Super Admins</span>
+          <span className="user-metric-num text-purple">{adminCount}</span>
+          <span className="user-metric-label">Admins & Super Admins</span>
         </div>
         <div className="user-metric-card">
           <span className="user-metric-num text-blue">{traderCount}</span>
@@ -3020,15 +4120,22 @@ function UserManagementPanel({
       </div>
 
       <div className="security-policy-callout">
-        <ShieldCheck style={{ width: 20, height: 20, flexShrink: 0 }} />
+        <ShieldCheck style={{ width: 22, height: 22, flexShrink: 0, color: "#10b981" }} />
         <div>
-          <strong>Security Policy Active: Settings Exclusively for indurotech.jp@gmail.com</strong>
+          <strong>Role-Based Access Control: Admin Clearance Enabled</strong>
           <p style={{ margin: "4px 0 0", fontSize: 12 }}>
-            The Settings and Broker Configuration panel is strictly restricted to <code>indurotech.jp@gmail.com</code>.
-            Traders, Operators, and Viewers can inspect scanners, paper orders, and notifications, while settings modification remains protected.
+            Platform Administrators and Super Admins hold full clearance to access and modify Broker Settings, Dhan HQ Credentials, Scanner Universes, and Team Access.
+            You can grant the <strong>Admin</strong> role to any user in the list below with 1 click.
           </p>
         </div>
       </div>
+
+      {notification && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#f0fdf4", border: "1px solid #86efac", color: "#15803d", padding: "10px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 12 }}>
+          <CheckCircle2 style={{ width: 16, height: 16, color: "#16a34a" }} />
+          <span>{notification}</span>
+        </div>
+      )}
 
       <div className="panel" style={{ padding: 0 }}>
         <div className="users-toolbar">
@@ -3037,6 +4144,7 @@ function UserManagementPanel({
               Role:
               <select value={filterRole} onChange={(e) => setFilterRole(e.target.value)}>
                 <option value="all">All Roles</option>
+                <option value="Admin">Admin</option>
                 <option value="Super Admin">Super Admin</option>
                 <option value="Trader">Trader</option>
                 <option value="Operator">Operator</option>
@@ -3069,13 +4177,14 @@ function UserManagementPanel({
                 <th>Role</th>
                 <th>Status</th>
                 <th>Last Active</th>
-                <th>Actions</th>
+                <th>Clearance & Actions</th>
               </tr>
             </thead>
             <tbody>
               {filteredUsers.map((user) => {
                 const isSuperAdminEmail = user.email.toLowerCase() === "indurotech.jp@gmail.com";
                 const isCurrent = currentUser?.email.toLowerCase() === user.email.toLowerCase();
+                const isUserAdmin = user.role === "Admin" || user.role === "Super Admin" || isSuperAdminEmail;
 
                 return (
                   <tr key={user.id} className={isCurrent ? "current-user-row" : ""}>
@@ -3118,17 +4227,37 @@ function UserManagementPanel({
                             Switch To
                           </button>
                         )}
-                        {!isSuperAdminEmail && (
+                        {!isSuperAdminEmail ? (
                           <>
                             <select
                               value={user.role}
-                              className="role-select-inline"
-                              onChange={(e) => onUpdateRole(user.id, e.target.value as any)}
+                              className={`role-select-inline ${user.role === "Admin" ? "role-select-admin" : ""}`}
+                              onChange={(e) => handleRoleUpdate(user.id, user.name, e.target.value as any)}
+                              title="Assign role to this user"
                             >
-                              <option value="Trader">Trader</option>
-                              <option value="Operator">Operator</option>
-                              <option value="Viewer">Viewer</option>
+                              <option value="Admin">Admin (Settings & Universes Clearance)</option>
+                              <option value="Super Admin">Super Admin</option>
+                              <option value="Trader">Trader (Scanning & Orders)</option>
+                              <option value="Operator">Operator (Monitor & Logs)</option>
+                              <option value="Viewer">Viewer (Read-only)</option>
                             </select>
+                            {user.role !== "Admin" && user.role !== "Super Admin" && (
+                              <button
+                                type="button"
+                                className="btn-action-promote-admin"
+                                onClick={() => handleRoleUpdate(user.id, user.name, "Admin")}
+                                title={`Assign Admin role to ${user.name}`}
+                              >
+                                <ShieldCheck style={{ width: 12, height: 12 }} />
+                                <span>Make Admin</span>
+                              </button>
+                            )}
+                            {isUserAdmin && (
+                              <span className="admin-clearance-badge" title="Has Admin and Settings clearance">
+                                <ShieldCheck style={{ width: 11, height: 11 }} />
+                                Admin
+                              </span>
+                            )}
                             <button
                               type="button"
                               className="btn-action-toggle"
@@ -3145,9 +4274,8 @@ function UserManagementPanel({
                               &times;
                             </button>
                           </>
-                        )}
-                        {isSuperAdminEmail && (
-                          <span className="protected-admin-pill">Settings Clearance</span>
+                        ) : (
+                          <span className="protected-owner-pill">Root Platform Owner</span>
                         )}
                       </div>
                     </td>
@@ -3195,21 +4323,27 @@ function UserTopbarProfile({
     );
   }
 
-  const isSuperAdmin = currentUser.email.toLowerCase() === "indurotech.jp@gmail.com";
+  const isAdmin = Boolean(
+    currentUser &&
+    (currentUser.email.toLowerCase() === "indurotech.jp@gmail.com" ||
+     currentUser.role === "Super Admin" ||
+     currentUser.role === "Admin")
+  );
+  const isSuperAdmin = currentUser.role === "Super Admin" || currentUser.email.toLowerCase() === "indurotech.jp@gmail.com";
 
   return (
     <div className="topbar-user-menu-wrap" ref={ref}>
       <button
         type="button"
-        className={`topbar-user-btn ${isSuperAdmin ? "admin-border" : ""}`}
+        className={`topbar-user-btn ${isAdmin ? "admin-border" : ""}`}
         onClick={() => setIsOpen((prev) => !prev)}
         aria-expanded={isOpen}
       >
         <img src={currentUser.avatarUrl} alt={currentUser.name} className="topbar-avatar" />
         <div className="topbar-user-copy">
           <span className="topbar-name">{currentUser.name}</span>
-          <span className={`topbar-role-pill ${isSuperAdmin ? "role-admin" : "role-trader"}`}>
-            {isSuperAdmin ? "Super Admin" : currentUser.role}
+          <span className={`topbar-role-pill ${isAdmin ? "role-admin" : "role-trader"}`}>
+            {currentUser.role}
           </span>
         </div>
       </button>
@@ -3496,6 +4630,8 @@ function AddUserModal({
           <label>
             Assigned Role
             <select value={role} onChange={(e) => setRole(e.target.value as any)}>
+              <option value="Admin">Admin (Full settings, broker config & universes clearance)</option>
+              <option value="Super Admin">Super Admin</option>
               <option value="Trader">Trader (Full market scanner & paper trading)</option>
               <option value="Operator">Operator (Monitor runs & event logs)</option>
               <option value="Viewer">Viewer (Read-only dashboard view)</option>
@@ -3503,7 +4639,7 @@ function AddUserModal({
           </label>
 
           <p className="note-text">
-            * Note: Super Admin status is strictly reserved for <code>indurotech.jp@gmail.com</code> per platform security rules.
+            * Note: Users assigned the <strong>Admin</strong> role receive immediate administrative clearance to access and configure settings, universes, and user permissions.
           </p>
 
           <div className="modal-actions">
@@ -3840,7 +4976,30 @@ function SettingsEditor({
               <option value="Both">Both (Telegram & Email)</option>
             </select>
           </label>
-          <label className="toggle-row"><input type="checkbox" checked={settings.notifications.sendEodWatchlistNotifications} onChange={(event) => updateNotifications({ sendEodWatchlistNotifications: event.target.checked })} />Send EOD watchlist</label>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={settings.notifications.sendEodWatchlistNotifications}
+              onChange={(event) => updateNotifications({ sendEodWatchlistNotifications: event.target.checked })}
+            />
+            Send EOD watchlist
+          </label>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={settings.notifications.sendStageNotifications ?? true}
+              onChange={(event) => updateNotifications({ sendStageNotifications: event.target.checked })}
+            />
+            Send notification for each pipeline step (Pre-market, Opening range, Live, AI, Paper, Monitor)
+          </label>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={settings.notifications.allowDuplicatesWithoutCheck ?? false}
+              onChange={(event) => updateNotifications({ allowDuplicatesWithoutCheck: event.target.checked })}
+            />
+            Enable sending notifications without duplicate check (bypass 10-minute duplicate suppression)
+          </label>
           <NumberField label="Minimum EOD score to notify" value={settings.notifications.minimumEodScoreToNotify} onChange={(value) => updateNotifications({ minimumEodScoreToNotify: value })} />
           <label>Telegram chat ID<input type="text" value={settings.notifications.telegram.chatId} onChange={(event) => updateTelegram({ chatId: event.target.value })} /></label>
           <label>Replace Telegram token<input type="password" value={settings.notifications.telegram.botToken ?? ""} placeholder={settings.notifications.telegram.botTokenMasked} onChange={(event) => updateTelegram({ botToken: event.target.value })} /></label>
@@ -4004,22 +5163,57 @@ function IntervalField({ value, onChange }: { value: string; onChange: (value: s
   );
 }
 
-function StageDecisionTable({ decisions, emptyText }: { decisions: StageDecision[]; emptyText: string }) {
+function StageDecisionTable({
+  decisions,
+  emptyText,
+  isSettingsAdmin,
+  onNotify,
+  notifyingSymbol
+}: {
+  decisions: StageDecision[];
+  emptyText: string;
+  isSettingsAdmin?: boolean;
+  onNotify?: (decision: StageDecision) => void;
+  notifyingSymbol?: string | null;
+}) {
+  const columns = isSettingsAdmin && onNotify
+    ? ["Symbol", "Direction", "Outcome", "Score", "Entry", "Stop", "Target", "Qty", "Risk", "Reasons", "Action"]
+    : ["Symbol", "Direction", "Outcome", "Score", "Entry", "Stop", "Target", "Qty", "Risk", "Reasons"];
+
   return (
     <DataTable
-      columns={["Symbol", "Direction", "Outcome", "Score", "Entry", "Stop", "Target", "Qty", "Risk", "Reasons"]}
-      rows={decisions.map((item) => [
-        `${item.exchange}:${item.symbol}`,
-        item.direction ?? "-",
-        item.outcome,
-        formatNumber(item.score),
-        formatOptionalNumber(item.entryPrice),
-        formatOptionalNumber(item.stopPrice),
-        formatOptionalNumber(item.targetPrice),
-        item.quantity?.toString() ?? "-",
-        item.riskRejectionReason ?? formatOptionalNumber(item.plannedRiskAmount),
-        summarizeReasons(item.reasonsJson)
-      ])}
+      columns={columns}
+      rows={decisions.map((item) => {
+        const baseRow: React.ReactNode[] = [
+          `${item.exchange}:${item.symbol}`,
+          item.direction ?? "-",
+          item.outcome,
+          formatNumber(item.score),
+          formatOptionalNumber(item.entryPrice),
+          formatOptionalNumber(item.stopPrice),
+          formatOptionalNumber(item.targetPrice),
+          item.quantity?.toString() ?? "-",
+          item.riskRejectionReason ?? formatOptionalNumber(item.plannedRiskAmount),
+          summarizeReasons(item.reasonsJson)
+        ];
+
+        if (isSettingsAdmin && onNotify) {
+          baseRow.push(
+            <button
+              type="button"
+              className="btn-notify-row"
+              disabled={notifyingSymbol === item.symbol}
+              onClick={() => onNotify(item)}
+              title={`Send notification for ${item.symbol}`}
+            >
+              <Bell style={{ width: 11, height: 11 }} />
+              <span>{notifyingSymbol === item.symbol ? "Sending..." : "Notify"}</span>
+            </button>
+          );
+        }
+
+        return baseRow;
+      })}
       emptyText={emptyText}
     />
   );

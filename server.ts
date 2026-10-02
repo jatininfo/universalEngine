@@ -284,7 +284,7 @@ export interface AppUser {
   name: string;
   avatarUrl?: string;
   provider: "google" | "microsoft" | "meta" | "email";
-  role: "Super Admin" | "Trader" | "Operator" | "Viewer";
+  role: "Super Admin" | "Admin" | "Trader" | "Operator" | "Viewer";
   status: "Active" | "Suspended";
   createdAtUtc: string;
   lastLoginAtUtc: string;
@@ -463,6 +463,8 @@ const state = {
     notifications: {
       channel: (process.env.NOTIFICATION_CHANNEL as any) || "Console",
       sendEodWatchlistNotifications: true,
+      sendStageNotifications: true,
+      allowDuplicatesWithoutCheck: false,
       minimumEodScoreToNotify: 70,
       telegram: {
         botTokenMasked: maskSecret(initialTelegramToken),
@@ -1037,10 +1039,26 @@ interface NotificationResult {
   subject: string;
   errorMessage?: string;
   timestamp: string;
+  isDuplicate?: boolean;
 }
 
-function escapeHtml(str: string): string {
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+interface NotificationDispatchOptions {
+  channelOverride?: string;
+  skipDuplicateCheck?: boolean;
+  candidateSymbol?: string;
+  stageName?: string;
+}
+
+interface SentNotificationRecord {
+  fingerprint: string;
+  sentAtUtc: string;
+  timestampMs: number;
+}
+const recentNotificationHistory: SentNotificationRecord[] = [];
+
+function escapeHtml(str: any): string {
+  if (str === null || str === undefined) return "";
+  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 async function sendTelegramNotification(
@@ -1289,18 +1307,65 @@ async function dispatchAlertNotification(
   subject: string,
   htmlMessage: string,
   textMessage: string,
-  channelOverride?: string
+  channelOverride?: string,
+  options?: NotificationDispatchOptions
 ): Promise<NotificationResult[]> {
-  const channel = channelOverride || state.settings.notifications.channel;
+  const channel = channelOverride || options?.channelOverride || state.settings.notifications.channel;
   const results: NotificationResult[] = [];
   const timestamp = new Date().toISOString();
 
+  // Duplicate Check logic:
+  // If skipDuplicateCheck is true or global allowDuplicatesWithoutCheck is true, bypass duplicate detection!
+  const allowDuplicates = Boolean(
+    options?.skipDuplicateCheck ?? (state.settings.notifications as any).allowDuplicatesWithoutCheck
+  );
+  const fingerprint = `${(options?.candidateSymbol || subject).trim().toLowerCase()}::${channel.toLowerCase()}`;
+
+  if (!allowDuplicates) {
+    const existing = recentNotificationHistory.find(
+      (entry) => entry.fingerprint === fingerprint && Date.now() - entry.timestampMs < 10 * 60 * 1000
+    );
+    if (existing) {
+      const elapsedSec = Math.max(1, Math.round((Date.now() - existing.timestampMs) / 1000));
+      const dupMsg = `Duplicate notification suppressed (previously sent ${elapsedSec}s ago). Enable 'Send without duplicate check' to bypass.`;
+      const attempt: NotificationAttempt = {
+        id: state.notifications.length + 1,
+        channel,
+        subject: `[DUPLICATE SUPPRESSED] ${subject}`,
+        isSuccess: false,
+        attemptedAtUtc: timestamp,
+        errorMessage: dupMsg
+      };
+      state.notifications.unshift(attempt);
+      return [{
+        channel,
+        isSuccess: false,
+        subject,
+        errorMessage: dupMsg,
+        timestamp,
+        isDuplicate: true
+      }];
+    }
+  }
+
+  // Register sent fingerprint
+  recentNotificationHistory.unshift({
+    fingerprint,
+    sentAtUtc: timestamp,
+    timestampMs: Date.now()
+  });
+  if (recentNotificationHistory.length > 500) {
+    recentNotificationHistory.pop();
+  }
+
+  const bypassNote = options?.skipDuplicateCheck ? " [Duplicate check: Bypassed]" : "";
+
   if (channel === "Console") {
-    console.log(`\n================== [NOTIFICATION: CONSOLE] ==================\nSubject: ${subject}\n\n${textMessage}\n============================================================\n`);
+    console.log(`\n================== [NOTIFICATION: CONSOLE${bypassNote}] ==================\nSubject: ${subject}\n\n${textMessage}\n============================================================\n`);
     state.notifications.unshift({
       id: state.notifications.length + 1,
       channel: "Console",
-      subject,
+      subject: options?.skipDuplicateCheck ? `${subject} (Duplicate Bypassed)` : subject,
       isSuccess: true,
       attemptedAtUtc: timestamp
     });
@@ -1414,7 +1479,7 @@ ${rowsHtml}
   const rowsText = candidates
     .map(
       (c, idx) =>
-        `${idx + 1}. ${c.symbol} (${c.exchange}) - ${c.direction || "Long"} | Score: ${c.score}\n   Reason: ${c.verdictReason || "Passed filter criteria"}`
+        `${idx + 1}. ${c.symbol} (${c.exchange || "NSE"}) - ${c.direction || "Long"} | Score: ${c.score ?? "-"}\n   Reason: ${c.verdictReason || "Passed filter criteria"}`
     )
     .join("\n\n");
 
@@ -1464,6 +1529,98 @@ Sample Trade Verification:
 
 Test dispatched at: ${timestamp}
 All notification pipelines are active and ready to receive intraday signals.
+`.trim();
+
+  return { subject, html, text };
+}
+
+function buildStageNotificationContent(stage: string, sessionDate: string, data: {
+  evaluatedCount: number;
+  acceptedCount: number;
+  rejectedCount: number;
+  symbols?: string[];
+  message?: string;
+  topDetails?: Array<{ symbol: string; direction?: string; score?: number; entry?: number; stop?: number; target?: number }>;
+}) {
+  const subject = `[PIPELINE: ${stage.toUpperCase()}] ${data.acceptedCount} Signals / Decisions - ${sessionDate}`;
+  const dirIcon = (dir?: string) => dir?.toUpperCase() === "SHORT" ? "🔴 SHORT" : "🟢 LONG";
+
+  const detailsHtml = data.topDetails && data.topDetails.length > 0
+    ? `
+<br><b>🎯 Top Qualified Signals:</b>
+<ul>
+${data.topDetails.slice(0, 6).map((d) => `
+  <li><b><code>${escapeHtml(d.symbol)}</code></b> | ${dirIcon(d.direction)} | Score: <b>${d.score ?? '-'}</b>/100
+  ${d.entry ? `<br>&nbsp;&nbsp;Entry: ₹${d.entry.toFixed(2)} | SL: ₹${d.stop?.toFixed(2) ?? '-'} | TGT: ₹${d.target?.toFixed(2) ?? '-'}` : ''}
+  </li>
+`).join("")}
+</ul>`
+    : (data.symbols && data.symbols.length > 0 ? `<br><b>Symbols:</b> <code>${data.symbols.slice(0, 10).join(", ")}</code>` : '');
+
+  const html = `
+<b>🚀 UNIVERSAL ENGINE PIPELINE STEP COMPLETED</b>
+<b>Stage:</b> <b>${escapeHtml(stage)}</b>
+<b>Session Date:</b> ${escapeHtml(sessionDate)}
+<b>Evaluated:</b> ${data.evaluatedCount} | <b>Qualified/Accepted:</b> <span style="color:#10b981;font-weight:bold;">${data.acceptedCount}</span> | <b>Rejected:</b> ${data.rejectedCount}
+${detailsHtml}
+<br><i>${escapeHtml(data.message || `Automated notification for pipeline step ${stage}.`)}</i>
+`.trim();
+
+  const text = `
+🚀 UNIVERSAL ENGINE PIPELINE STEP COMPLETED
+Stage: ${stage}
+Session: ${sessionDate}
+Evaluated: ${data.evaluatedCount} | Qualified: ${data.acceptedCount} | Rejected: ${data.rejectedCount}
+${data.symbols ? `Symbols: ${data.symbols.join(", ")}` : ''}
+${data.message || ''}
+`.trim();
+
+  return { subject, html, text };
+}
+
+function buildSingleResultAlertContent(candidate: {
+  symbol: string;
+  exchange: string;
+  stage?: string;
+  direction?: string;
+  score?: number;
+  entryPrice?: number;
+  stopPrice?: number;
+  targetPrice?: number;
+  finalVerdict?: string;
+  verdictReason?: string;
+  reasons?: string[] | string;
+  outcome?: string;
+  sessionDate?: string;
+}) {
+  const dir = candidate.direction || "Long";
+  const dirIcon = dir.toUpperCase() === "SHORT" ? "🔴" : "🟢";
+  const stage = candidate.stage || "Scanner Result";
+  const score = candidate.score ?? 85;
+  const session = candidate.sessionDate || new Date().toISOString().slice(0, 10);
+  const subject = `[${stage.toUpperCase()}] ${dir.toUpperCase()} ${candidate.symbol} (${candidate.exchange}) Score ${score}/100`;
+
+  const html = `
+<b>🔔 UNIVERSAL ENGINE SIGNAL NOTIFICATION</b>
+<b>Symbol:</b> <code>${escapeHtml(candidate.symbol)}</code> (${escapeHtml(candidate.exchange)})
+<b>Stage:</b> ${escapeHtml(stage)} | <b>Session:</b> ${escapeHtml(session)}
+<b>Direction:</b> ${dirIcon} <b>${escapeHtml(dir.toUpperCase())}</b> | <b>Score:</b> <b>${score}</b>/100
+<b>Outcome:</b> <b>${escapeHtml(candidate.outcome || candidate.finalVerdict || "Accepted")}</b>
+${candidate.verdictReason ? `<br><b>Verdict Note:</b> ${escapeHtml(candidate.verdictReason)}` : ''}
+${candidate.entryPrice ? `<br><b>Entry:</b> ₹${candidate.entryPrice.toFixed(2)} | <b>Stop Loss:</b> ₹${candidate.stopPrice?.toFixed(2) ?? '-'} | <b>Target:</b> ₹${candidate.targetPrice?.toFixed(2) ?? '-'}` : ''}
+<br><b>Reasons:</b> ${escapeHtml(Array.isArray(candidate.reasons) ? candidate.reasons.join(", ") : (candidate.reasons || "Structural alignment"))}
+<br><i>⚠️ Manual admin broadcast from Universal Engine UI. Trader-authoritative alert.</i>
+`.trim();
+
+  const text = `
+🔔 UNIVERSAL ENGINE SIGNAL NOTIFICATION
+Symbol: ${candidate.symbol} (${candidate.exchange})
+Stage: ${stage} | Session: ${session}
+Direction: ${dir.toUpperCase()} | Score: ${score}/100
+Outcome: ${candidate.outcome || candidate.finalVerdict || "Accepted"}
+${candidate.verdictReason ? `Verdict: ${candidate.verdictReason}\n` : ''}
+${candidate.entryPrice ? `Entry: ₹${candidate.entryPrice.toFixed(2)} | SL: ₹${candidate.stopPrice?.toFixed(2)} | TGT: ₹${candidate.targetPrice?.toFixed(2)}\n` : ''}
+Reasons: ${Array.isArray(candidate.reasons) ? candidate.reasons.join(", ") : (candidate.reasons || "Structural alignment")}
 `.trim();
 
   return { subject, html, text };
@@ -1525,10 +1682,16 @@ async function startServer() {
 
   function requireSettingsAdmin(req: Request, res: Response, next: () => void) {
     const user = getAuthenticatedUser(req);
-    if (!user || user.email.toLowerCase() !== SETTINGS_ADMIN_EMAIL.toLowerCase()) {
+    const hasAdminClearance = Boolean(
+      user &&
+      (user.email.toLowerCase() === SETTINGS_ADMIN_EMAIL.toLowerCase() ||
+       user.role === "Super Admin" ||
+       (user.role as string) === "Admin")
+    );
+    if (!user || !hasAdminClearance) {
       return res.status(403).json({
         error: "Access Denied",
-        message: `Only user with email address "${SETTINGS_ADMIN_EMAIL}" is authorized to access or modify application settings.`,
+        message: `Only users with an Admin or Super Admin role are authorized to access or modify application settings.`,
         authorizedEmail: SETTINGS_ADMIN_EMAIL,
         currentEmail: user?.email || "anonymous"
       });
@@ -1539,11 +1702,17 @@ async function startServer() {
   // Auth & Session Routes
   app.get("/api/auth/session", (req: Request, res: Response) => {
     const user = getAuthenticatedUser(req);
+    const hasAdminAccess = Boolean(
+      user &&
+      (user.email.toLowerCase() === SETTINGS_ADMIN_EMAIL.toLowerCase() ||
+       user.role === "Super Admin" ||
+       (user.role as string) === "Admin")
+    );
     res.json({
       user,
       isAuthenticated: Boolean(user),
       settingsAdminEmail: SETTINGS_ADMIN_EMAIL,
-      hasSettingsAccess: Boolean(user && user.email.toLowerCase() === SETTINGS_ADMIN_EMAIL.toLowerCase()),
+      hasSettingsAccess: hasAdminAccess,
       providers: ["google", "microsoft", "meta", "email"]
     });
   });
@@ -1583,10 +1752,16 @@ async function startServer() {
       createdAtUtc: new Date().toISOString()
     });
 
+    const hasAdminAccess = Boolean(
+      target.email.toLowerCase() === SETTINGS_ADMIN_EMAIL.toLowerCase() ||
+      target.role === "Super Admin" ||
+      (target.role as string) === "Admin"
+    );
+
     res.json({
       success: true,
       user: target,
-      hasSettingsAccess: target.email.toLowerCase() === SETTINGS_ADMIN_EMAIL.toLowerCase()
+      hasSettingsAccess: hasAdminAccess
     });
   });
 
@@ -1629,10 +1804,16 @@ async function startServer() {
       createdAtUtc: new Date().toISOString()
     });
 
+    const hasAdminAccess = Boolean(
+      user.email.toLowerCase() === SETTINGS_ADMIN_EMAIL.toLowerCase() ||
+      user.role === "Super Admin" ||
+      (user.role as string) === "Admin"
+    );
+
     res.json({
       success: true,
       user,
-      hasSettingsAccess: user.email.toLowerCase() === SETTINGS_ADMIN_EMAIL.toLowerCase()
+      hasSettingsAccess: hasAdminAccess
     });
   });
 
@@ -1698,6 +1879,19 @@ async function startServer() {
       if (update.role) target.role = update.role;
       if (update.status) target.status = update.status;
     }
+
+    // Keep currentUser session in sync if modified
+    if (state.currentUser && state.currentUser.id === target.id) {
+      state.currentUser = { ...target };
+    }
+
+    state.eventLogs.unshift({
+      id: state.eventLogs.length + 1,
+      eventType: "UserUpdated",
+      subject: target.email,
+      payloadJson: JSON.stringify({ role: target.role, status: target.status }),
+      createdAtUtc: new Date().toISOString()
+    });
 
     res.json(target);
   });
@@ -1943,21 +2137,31 @@ async function startServer() {
       createdAtUtc: new Date().toISOString()
     });
 
+    const skipDuplicateCheck = req.body?.skipDuplicateCheck ?? (req.query.skipDuplicateCheck === "true");
+
     if (state.settings.notifications.sendEodWatchlistNotifications) {
       const minScore = state.settings.notifications.minimumEodScoreToNotify;
       const qualified = generated.filter((c) => c.outcome === "Accepted" && c.score >= minScore);
       if (qualified.length > 0) {
         const watchlistAlert = buildWatchlistAlertContent(sessionDate, qualified);
-        void dispatchAlertNotification(watchlistAlert.subject, watchlistAlert.html, watchlistAlert.text);
+        void dispatchAlertNotification(watchlistAlert.subject, watchlistAlert.html, watchlistAlert.text, undefined, {
+          skipDuplicateCheck,
+          stageName: "EOD"
+        });
       } else {
         const generalAlert = buildWatchlistAlertContent(sessionDate, generated.filter((c) => c.outcome === "Accepted"));
-        void dispatchAlertNotification(generalAlert.subject, generalAlert.html, generalAlert.text);
+        void dispatchAlertNotification(generalAlert.subject, generalAlert.html, generalAlert.text, undefined, {
+          skipDuplicateCheck,
+          stageName: "EOD"
+        });
       }
     } else {
       void dispatchAlertNotification(
         `EOD Scan Run: ${acceptedCount} candidates qualified for ${sessionDate}`,
         `<b>EOD Scan Completed</b><br>Session: ${escapeHtml(sessionDate)}<br>Accepted: <b>${acceptedCount}</b> | Rejected: ${rejectedCount}`,
-        `EOD Scan Completed\nSession: ${sessionDate}\nAccepted: ${acceptedCount} | Rejected: ${rejectedCount}`
+        `EOD Scan Completed\nSession: ${sessionDate}\nAccepted: ${acceptedCount} | Rejected: ${rejectedCount}`,
+        undefined,
+        { skipDuplicateCheck, stageName: "EOD" }
       );
     }
 
@@ -2033,6 +2237,27 @@ async function startServer() {
       createdAtUtc: new Date().toISOString()
     });
 
+    const skipDuplicateCheck = req.body?.skipDuplicateCheck ?? (req.query.skipDuplicateCheck === "true");
+    const pmAlert = buildStageNotificationContent("Pre-market", sessionDate, {
+      evaluatedCount: decisions.length,
+      acceptedCount,
+      rejectedCount,
+      symbols: decisions.filter((d) => d.outcome === "Accepted").map((d) => d.symbol),
+      topDetails: decisions.filter((d) => d.outcome === "Accepted").map((d) => ({
+        symbol: d.symbol,
+        direction: d.direction,
+        score: d.score,
+        entry: d.entryPrice,
+        stop: d.stopPrice,
+        target: d.targetPrice
+      })),
+      message: `Pre-market validation completed: ${acceptedCount} signals qualified within gap threshold.`
+    });
+    void dispatchAlertNotification(pmAlert.subject, pmAlert.html, pmAlert.text, undefined, {
+      skipDuplicateCheck,
+      stageName: "Pre-market"
+    });
+
     res.json({
       stage: "Pre-market",
       sessionDate,
@@ -2100,6 +2325,8 @@ async function startServer() {
       createdAtUtc: new Date().toISOString()
     });
 
+    const skipDuplicateCheck = req.body?.skipDuplicateCheck ?? (req.query.skipDuplicateCheck === "true");
+
     if (decisions.length > 0) {
       const topSignal = decisions[0];
       const alert = buildTradeAlertContent({
@@ -2117,7 +2344,21 @@ async function startServer() {
         reasons: ["OpeningRangeBreakout", "VolumeAbove50Avg", "RiskConstraintsPassed"],
         sessionDate
       });
-      void dispatchAlertNotification(alert.subject, alert.html, alert.text);
+      void dispatchAlertNotification(alert.subject, alert.html, alert.text, undefined, {
+        skipDuplicateCheck,
+        stageName: "Opening range"
+      });
+    } else {
+      const orbAlert = buildStageNotificationContent("Opening range", sessionDate, {
+        evaluatedCount: decisions.length,
+        acceptedCount,
+        rejectedCount: 0,
+        message: `Opening range scanner completed with ${acceptedCount} signals triggered.`
+      });
+      void dispatchAlertNotification(orbAlert.subject, orbAlert.html, orbAlert.text, undefined, {
+        skipDuplicateCheck,
+        stageName: "Opening range"
+      });
     }
 
     res.json({
@@ -2156,6 +2397,27 @@ async function startServer() {
       rejectedCount: 0,
       confirmedCount: decisions.length,
       decisions
+    });
+
+    const skipDuplicateCheck = req.body?.skipDuplicateCheck ?? (req.query.skipDuplicateCheck === "true");
+    const liveAlert = buildStageNotificationContent("Live validation", sessionDate, {
+      evaluatedCount: decisions.length,
+      acceptedCount: decisions.length,
+      rejectedCount: 0,
+      symbols: decisions.map((d) => d.symbol),
+      topDetails: decisions.map((d) => ({
+        symbol: d.symbol,
+        direction: d.direction,
+        score: d.score,
+        entry: d.entryPrice,
+        stop: d.stopPrice,
+        target: d.targetPrice
+      })),
+      message: `Live tick validation confirmed ${decisions.length} trades against real-time order books.`
+    });
+    void dispatchAlertNotification(liveAlert.subject, liveAlert.html, liveAlert.text, undefined, {
+      skipDuplicateCheck,
+      stageName: "Live validation"
     });
 
     res.json({
@@ -2208,6 +2470,19 @@ async function startServer() {
       startedAtUtc: new Date().toISOString(),
       eventCount: events.length,
       events
+    });
+
+    const skipDuplicateCheck = req.body?.skipDuplicateCheck ?? (req.query.skipDuplicateCheck === "true");
+    const monSubject = `[MONITOR UPDATE] ${events.length} Position Alerts for ${sessionDate}`;
+    const monHtml = `
+<b>📡 POSITION MONITORING UPDATE</b><br>
+Session: <b>${escapeHtml(sessionDate)}</b> | Events: <b>${events.length}</b><br><br>
+${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml(e.direction || "Long")}): <span style="color:#0284c7;font-weight:bold;">${escapeHtml(e.status)}</span> @ ₹${(e.latestPrice ?? 0).toFixed(2)} - <i>${escapeHtml(e.reason)}</i>`).join("<br>")}
+`.trim();
+    const monText = `MONITORING UPDATE (${sessionDate})\n${events.map(e => `${e.symbol} (${e.direction || "Long"}): ${e.status} @ ₹${e.latestPrice ?? "-"} - ${e.reason}`).join("\n")}`;
+    void dispatchAlertNotification(monSubject, monHtml, monText, undefined, {
+      skipDuplicateCheck,
+      stageName: "Monitor"
     });
 
     res.json({
@@ -2368,6 +2643,26 @@ async function startServer() {
       orders
     });
 
+    const skipDuplicateCheck = req.body?.skipDuplicateCheck ?? (req.query.skipDuplicateCheck === "true");
+    const paperAlert = buildStageNotificationContent("Paper Trading", sessionDate, {
+      evaluatedCount: orders.length,
+      acceptedCount: orders.length,
+      rejectedCount: 0,
+      symbols: orders.map((o) => o.symbol),
+      topDetails: orders.map((o) => ({
+        symbol: o.symbol,
+        direction: o.direction,
+        entry: o.entryPrice,
+        stop: o.stopPrice,
+        target: o.targetPrice
+      })),
+      message: `Paper trading orders generated: ${orders.length} positions open.`
+    });
+    void dispatchAlertNotification(paperAlert.subject, paperAlert.html, paperAlert.text, undefined, {
+      skipDuplicateCheck,
+      stageName: "Paper trading"
+    });
+
     res.json({
       stage: "PaperTrading",
       sessionDate,
@@ -2443,6 +2738,19 @@ async function startServer() {
       decisions
     });
 
+    const skipDuplicateCheck = req.body?.skipDuplicateCheck ?? (req.query.skipDuplicateCheck === "true");
+    const aiAlert = buildStageNotificationContent("AI Analysis", sessionDate, {
+      evaluatedCount: decisions.length,
+      acceptedCount: tradeCandidateCount,
+      rejectedCount: decisions.length - tradeCandidateCount,
+      symbols: decisions.filter((d) => d.recommendation === "BUY_CANDIDATE").map((d) => d.symbol),
+      message: `AI Analysis complete: ${tradeCandidateCount} BUY_CANDIDATES produced (${state.settings.ai.promptVersion}).`
+    });
+    void dispatchAlertNotification(aiAlert.subject, aiAlert.html, aiAlert.text, undefined, {
+      skipDuplicateCheck,
+      stageName: "AI analysis"
+    });
+
     res.json({
       stage: "AiAnalysis",
       sessionDate,
@@ -2511,6 +2819,148 @@ async function startServer() {
       success: anySucceeded,
       message: summary || "No notification channels configured for test.",
       results
+    });
+  });
+
+  // Manual Admin Notification for a single candidate or scan result
+  app.post("/notifications/send-candidate", requireSettingsAdmin, async (req: Request, res: Response) => {
+    const {
+      symbol,
+      exchange = "NSE",
+      stage = "Scanner Result",
+      direction,
+      score,
+      entryPrice,
+      stopPrice,
+      targetPrice,
+      reasons,
+      verdictReason,
+      outcome,
+      sessionDate = new Date().toISOString().slice(0, 10),
+      channelOverride,
+      skipDuplicateCheck = false
+    } = req.body || {};
+
+    if (!symbol) {
+      return res.status(400).json({ error: "Symbol is required to send notification." });
+    }
+
+    const alertContent = buildSingleResultAlertContent({
+      symbol,
+      exchange,
+      stage,
+      direction,
+      score,
+      entryPrice,
+      stopPrice,
+      targetPrice,
+      reasons,
+      verdictReason,
+      outcome,
+      sessionDate
+    });
+
+    const results = await dispatchAlertNotification(
+      alertContent.subject,
+      alertContent.html,
+      alertContent.text,
+      channelOverride,
+      {
+        skipDuplicateCheck: Boolean(skipDuplicateCheck),
+        candidateSymbol: symbol,
+        stageName: stage
+      }
+    );
+
+    const isDuplicate = results.some((r) => r.isDuplicate);
+    const anySuccess = results.some((r) => r.isSuccess);
+
+    state.eventLogs.unshift({
+      id: state.eventLogs.length + 1,
+      eventType: "ManualResultNotificationDispatched",
+      subject: `${symbol}:${stage}`,
+      payloadJson: JSON.stringify({ symbol, stage, skipDuplicateCheck, results }),
+      createdAtUtc: new Date().toISOString()
+    });
+
+    res.json({
+      success: anySuccess,
+      isDuplicate,
+      skipDuplicateCheck: Boolean(skipDuplicateCheck),
+      results,
+      message: isDuplicate
+        ? `Duplicate notification blocked. Check 'Send without duplicate check' to bypass duplicate suppression.`
+        : anySuccess
+        ? `Notification dispatched for ${symbol} via ${results.filter((r) => r.isSuccess).map((r) => r.channel).join(", ")}.`
+        : `Notification delivery failed: ${results.map((r) => r.errorMessage).join("; ")}`
+    });
+  });
+
+  // Manual Admin Broadcast for stage results
+  app.post("/notifications/broadcast-stage-results", requireSettingsAdmin, async (req: Request, res: Response) => {
+    const {
+      stage = "EOD",
+      sessionDate = new Date().toISOString().slice(0, 10),
+      items = [],
+      channelOverride,
+      skipDuplicateCheck = false
+    } = req.body || {};
+
+    let content;
+    if (stage === "EOD") {
+      const candidates: Candidate[] = items.length > 0 ? items : (state.scannerRuns[0]?.candidates || []);
+      const qualified = candidates.filter((c) => c.outcome === "Accepted");
+      content = buildWatchlistAlertContent(sessionDate, qualified.length > 0 ? qualified : candidates);
+    } else {
+      content = buildStageNotificationContent(stage, sessionDate, {
+        evaluatedCount: items.length,
+        acceptedCount: items.filter((i: any) => i.outcome === "Accepted" || i.outcome === "BUY_CANDIDATE").length || items.length,
+        rejectedCount: items.filter((i: any) => i.outcome === "Rejected").length,
+        symbols: items.map((i: any) => i.symbol),
+        topDetails: items.slice(0, 8).map((i: any) => ({
+          symbol: i.symbol,
+          direction: i.direction,
+          score: i.score,
+          entry: i.entryPrice,
+          stop: i.stopPrice,
+          target: i.targetPrice
+        })),
+        message: `Admin manual broadcast of ${stage} results.`
+      });
+    }
+
+    const results = await dispatchAlertNotification(
+      content.subject,
+      content.html,
+      content.text,
+      channelOverride,
+      {
+        skipDuplicateCheck: Boolean(skipDuplicateCheck),
+        stageName: stage
+      }
+    );
+
+    const isDuplicate = results.some((r) => r.isDuplicate);
+    const anySuccess = results.some((r) => r.isSuccess);
+
+    state.eventLogs.unshift({
+      id: state.eventLogs.length + 1,
+      eventType: "StageResultsBroadcast",
+      subject: `${stage}:${sessionDate}`,
+      payloadJson: JSON.stringify({ stage, itemCount: items.length, skipDuplicateCheck, results }),
+      createdAtUtc: new Date().toISOString()
+    });
+
+    res.json({
+      success: anySuccess,
+      isDuplicate,
+      skipDuplicateCheck: Boolean(skipDuplicateCheck),
+      results,
+      message: isDuplicate
+        ? `Broadcast blocked as recent duplicate. Enable 'Send without duplicate check' to force delivery.`
+        : anySuccess
+        ? `Broadcast for ${stage} sent successfully to ${results.filter((r) => r.isSuccess).map((r) => r.channel).join(", ")}.`
+        : `Broadcast failed: ${results.map((r) => r.errorMessage).join("; ")}`
     });
   });
 
