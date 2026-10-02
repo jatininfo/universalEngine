@@ -1,0 +1,7 @@
+{
+  "name": "UniversalEngine Intraday Scanner",
+  "description": "NSE/BSE Intraday Opportunity Scanner, EOD Analysis, Paper Trading & Backtesting Dashboard",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

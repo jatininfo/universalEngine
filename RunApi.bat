@@ -1,1 +1,0 @@
-dotnet run --project src/UniversalEngine.Api/UniversalEngine.Api.csproj
