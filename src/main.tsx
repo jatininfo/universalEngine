@@ -373,6 +373,7 @@ type PipelineRunResult = {
   acceptedCount: number;
   rejectedCount: number;
   message: string;
+  notificationResults?: Array<{ channel: string; isSuccess: boolean; errorMessage?: string }>;
 };
 
 type PipelineStageStatus = {
@@ -633,6 +634,7 @@ function App() {
   const [lastRefresh, setLastRefresh] = React.useState<Date | null>(null);
   const [testingNotificationChannel, setTestingNotificationChannel] = React.useState<string | null>(null);
   const [sendWithoutDuplicateCheck, setSendWithoutDuplicateCheck] = React.useState<boolean>(true);
+  const [selectedNotificationChannel, setSelectedNotificationChannel] = React.useState<string>("Both");
   const [notifyingCandidateSymbol, setNotifyingCandidateSymbol] = React.useState<string | null>(null);
   const [broadcastingStage, setBroadcastingStage] = React.useState<string | null>(null);
   const [recentNotifiedCandidates, setRecentNotifiedCandidates] = React.useState<Record<string, {
@@ -1020,6 +1022,16 @@ function App() {
     try {
       const result = await postJson<PipelineRunResult>(appendRunQuery(path, runDate));
       setRunResult(result);
+      if (result.notificationResults && result.notificationResults.length > 0) {
+        const anySuccess = result.notificationResults.some((r) => r.isSuccess);
+        const channels = result.notificationResults.filter((r) => r.isSuccess).map((r) => r.channel).join(", ");
+        setNotificationStatusBanner({
+          success: anySuccess,
+          message: anySuccess
+            ? `${stage} stage completed & notifications dispatched via ${channels}.`
+            : `${stage} stage completed but notification failed: ${result.notificationResults.map((r) => r.errorMessage).join("; ")}`
+        });
+      }
       await loadDashboard();
     } catch (error) {
       setState((current) => ({
@@ -1102,10 +1114,12 @@ function App() {
       reasonsJson?: string;
       outcome?: string;
     },
-    forceSend: boolean = false
+    forceSend: boolean = false,
+    channelOverride?: string
   ) {
     setNotifyingCandidateSymbol(candidate.symbol);
     try {
+      const targetChannel = channelOverride || selectedNotificationChannel;
       const res = await postJson<{
         success: boolean;
         isDuplicate?: boolean;
@@ -1126,7 +1140,8 @@ function App() {
         outcome: candidate.outcome,
         reasons: candidate.reasonsJson ? summarizeReasons(candidate.reasonsJson) : "Technical Setup",
         skipDuplicateCheck: forceSend ? true : sendWithoutDuplicateCheck,
-        forceSend
+        forceSend,
+        channelOverride: targetChannel
       });
 
       const nowTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -1135,7 +1150,7 @@ function App() {
         [candidate.symbol]: {
           time: nowTime,
           status: res.success ? "success" : res.isDuplicate ? "duplicate" : "error",
-          channel: res.results?.filter((r) => r.isSuccess).map((r) => r.channel).join(", "),
+          channel: res.results?.filter((r) => r.isSuccess).map((r) => r.channel).join(", ") || targetChannel,
           message: res.message
         }
       }));
@@ -1145,7 +1160,7 @@ function App() {
         message: res.message,
         isDuplicate: Boolean(res.isDuplicate),
         candidateSymbol: candidate.symbol,
-        onForceResend: () => void handleSendCandidateNotification(candidate, true)
+        onForceResend: () => void handleSendCandidateNotification(candidate, true, targetChannel)
       });
 
       void loadDashboard();
@@ -1159,9 +1174,10 @@ function App() {
     }
   }
 
-  async function handleBroadcastStageResults(stage: string, items: any[], forceSend: boolean = false) {
+  async function handleBroadcastStageResults(stage: string, items: any[], forceSend: boolean = false, channelOverride?: string) {
     setBroadcastingStage(stage);
     try {
+      const targetChannel = channelOverride || selectedNotificationChannel;
       const res = await postJson<{
         success: boolean;
         isDuplicate?: boolean;
@@ -1172,14 +1188,15 @@ function App() {
         stage,
         items,
         skipDuplicateCheck: forceSend ? true : sendWithoutDuplicateCheck,
-        forceSend
+        forceSend,
+        channelOverride: targetChannel
       });
 
       setNotificationStatusBanner({
         success: res.success,
         message: res.message,
         isDuplicate: Boolean(res.isDuplicate),
-        onForceResend: () => void handleBroadcastStageResults(stage, items, true)
+        onForceResend: () => void handleBroadcastStageResults(stage, items, true, targetChannel)
       });
 
       void loadDashboard();
@@ -1286,6 +1303,10 @@ function App() {
 
     if (sendWithoutDuplicateCheck) {
       params.set("skipDuplicateCheck", "true");
+    }
+
+    if (selectedNotificationChannel) {
+      params.set("channel", selectedNotificationChannel);
     }
 
     const query = params.toString();
@@ -1563,13 +1584,35 @@ function App() {
                   </span>
                 )}
               </div>
+              <div className="channel-select-control" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text-secondary, #64748b)" }}>Channel:</span>
+                <select
+                  value={selectedNotificationChannel}
+                  onChange={(e) => setSelectedNotificationChannel(e.target.value)}
+                  style={{
+                    padding: "3px 8px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    borderRadius: 4,
+                    border: "1px solid var(--color-border, #cbd5e1)",
+                    background: "var(--color-bg-card, #ffffff)",
+                    color: "inherit"
+                  }}
+                  title="Target notification channel for candidate signals and stage broadcasts"
+                >
+                  <option value="Both">Both (Telegram & Email)</option>
+                  <option value="Telegram">Telegram</option>
+                  <option value="Email">Email</option>
+                  <option value="Console">Console only</option>
+                </select>
+              </div>
               {canSendNotifications && (
                 <button
                   type="button"
                   className="btn-broadcast-results"
                   disabled={broadcastingStage !== null || state.candidates.length === 0}
                   onClick={() => void handleBroadcastStageResults("EOD", state.candidates)}
-                  title="Broadcast all qualified EOD candidates to configured notification channels"
+                  title={`Broadcast all qualified EOD candidates to ${selectedNotificationChannel} channel`}
                 >
                   <Bell style={{ width: 13, height: 13 }} />
                   <span>{broadcastingStage === "EOD" ? "Broadcasting..." : `Broadcast EOD Results (${state.candidates.length})`}</span>

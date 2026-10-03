@@ -507,7 +507,7 @@ const state = {
       minimumTradeProbability: 65
     },
     notifications: {
-      channel: (process.env.NOTIFICATION_CHANNEL as any) || "Console",
+      channel: (process.env.NOTIFICATION_CHANNEL as any) || "Both",
       sendEodWatchlistNotifications: true,
       sendStageNotifications: true,
       allowDuplicatesWithoutCheck: false,
@@ -1191,6 +1191,13 @@ function escapeHtml(str: any): string {
   return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function formatPrice(val: any, fallback = "-"): string {
+  if (val === null || val === undefined || val === "") return fallback;
+  const num = typeof val === "number" ? val : parseFloat(String(val).replace(/[^0-9.-]/g, ""));
+  if (isNaN(num)) return String(val);
+  return num.toFixed(2);
+}
+
 async function sendTelegramNotification(
   subject: string,
   htmlMessage: string,
@@ -1215,9 +1222,10 @@ async function sendTelegramNotification(
   }
 
   // Telegram HTML parse mode supports: <b>, <i>, <u>, <s>, <a>, <code>, <pre>, <blockquote>
-  // It specifically DOES NOT support <br>, <p>, <ul>, <li>, <span>, <div>
+  // It specifically DOES NOT support <br>, <p>, <ul>, <li>, <span>, <div>, &nbsp;
   const sanitizedTelegramHtml = htmlMessage
     .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/&nbsp;/gi, " ")
     .replace(/<\/p>/gi, "\n\n")
     .replace(/<p[^>]*>/gi, "")
     .replace(/<li[^>]*>/gi, "• ")
@@ -1249,21 +1257,29 @@ async function sendTelegramNotification(
 
     let data = (await response.json()) as any;
 
-    // Robust fallback: If HTML parse error occurred, retry sending plain text
-    if (!response.ok && data?.description && /can't parse entities|entity|tag/i.test(data.description)) {
+    // Robust fallback: If HTML parse error or any error occurred, retry sending plain text
+    if (!response.ok) {
       const fallbackController = new AbortController();
       const fallbackTimeout = setTimeout(() => fallbackController.abort(), 8000);
-      response = await fetch(telegramUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: textMessage
-        }),
-        signal: fallbackController.signal
-      });
-      clearTimeout(fallbackTimeout);
-      data = (await response.json()) as any;
+      try {
+        const fallbackResponse = await fetch(telegramUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: textMessage
+          }),
+          signal: fallbackController.signal
+        });
+        clearTimeout(fallbackTimeout);
+        const fallbackData = (await fallbackResponse.json()) as any;
+        if (fallbackResponse.ok && fallbackData.ok) {
+          response = fallbackResponse;
+          data = fallbackData;
+        }
+      } catch {
+        clearTimeout(fallbackTimeout);
+      }
     }
 
     if (response.ok && data.ok) {
@@ -1440,6 +1456,7 @@ async function sendEmailNotification(
     }
 
     // Always preserve the email in the In-App Virtual Inbox so message is NEVER lost
+    const isSavedToInbox = deliveryMode === "both" || deliveryMode === "inbox";
     const emailRecord: SentEmail = {
       id: state.sentEmails.length + 1,
       to,
@@ -1447,9 +1464,9 @@ async function sendEmailNotification(
       subject,
       htmlMessage,
       textMessage,
-      isSuccess: false,
+      isSuccess: isSavedToInbox,
       attemptedAtUtc: timestamp,
-      errorMessage: errorMsg
+      errorMessage: isSavedToInbox ? `Stored in In-App Inbox (SMTP relay: ${errorMsg})` : errorMsg
     };
     state.sentEmails.unshift(emailRecord);
 
@@ -1457,13 +1474,13 @@ async function sendEmailNotification(
       id: state.notifications.length + 1,
       channel: "Email",
       subject,
-      isSuccess: false,
+      isSuccess: isSavedToInbox,
       attemptedAtUtc: timestamp,
-      errorMessage: `${errorMsg} (Stored in In-App Inbox)`
+      errorMessage: isSavedToInbox ? `Delivered to In-App Virtual Inbox (SMTP relay attempt: ${errorMsg})` : errorMsg
     };
     state.notifications.unshift(attempt);
 
-    return { channel: "Email", isSuccess: false, subject, errorMessage: errorMsg, timestamp };
+    return { channel: "Email", isSuccess: isSavedToInbox, subject, errorMessage: errorMsg, timestamp };
   }
 }
 
@@ -1474,7 +1491,12 @@ async function dispatchAlertNotification(
   channelOverride?: string,
   options?: NotificationDispatchOptions
 ): Promise<NotificationResult[]> {
-  const channel = channelOverride || options?.channelOverride || state.settings.notifications.channel;
+  const rawChannel = channelOverride || options?.channelOverride || state.settings.notifications.channel || "Both";
+  const norm = rawChannel.trim().toLowerCase();
+  const isConsole = norm === "console";
+  const isTelegram = norm === "telegram" || norm === "both";
+  const isEmail = norm === "email" || norm === "both";
+  const channel = isTelegram && isEmail ? "Both" : isTelegram ? "Telegram" : isEmail ? "Email" : "Console";
   const results: NotificationResult[] = [];
   const timestamp = new Date().toISOString();
 
@@ -1524,7 +1546,7 @@ async function dispatchAlertNotification(
 
   const bypassNote = options?.skipDuplicateCheck ? " [Duplicate check: Bypassed]" : "";
 
-  if (channel === "Console") {
+  if (isConsole) {
     console.log(`\n================== [NOTIFICATION: CONSOLE${bypassNote}] ==================\nSubject: ${subject}\n\n${textMessage}\n============================================================\n`);
     state.notifications.unshift({
       id: state.notifications.length + 1,
@@ -1536,14 +1558,25 @@ async function dispatchAlertNotification(
     results.push({ channel: "Console", isSuccess: true, subject, timestamp });
   }
 
-  if (channel === "Telegram" || channel === "Both") {
+  if (isTelegram) {
     const tgRes = await sendTelegramNotification(subject, htmlMessage, textMessage);
     results.push(tgRes);
   }
 
-  if (channel === "Email" || channel === "Both") {
+  if (isEmail) {
     const emailRes = await sendEmailNotification(subject, htmlMessage, textMessage);
     results.push(emailRes);
+  }
+
+  if (results.length === 0) {
+    state.notifications.unshift({
+      id: state.notifications.length + 1,
+      channel: "Console",
+      subject,
+      isSuccess: true,
+      attemptedAtUtc: timestamp
+    });
+    results.push({ channel: "Console", isSuccess: true, subject, timestamp });
   }
 
   return results;
@@ -1625,8 +1658,13 @@ function buildWatchlistAlertContent(sessionDate: string, candidates: Candidate[]
 
   const rowsHtml = safeCandidates.length > 0 ? safeCandidates
     .map(
-      (c, idx) =>
-        `<b>${idx + 1}. ${escapeHtml(c.symbol)} (${escapeHtml(c.exchange || "NSE")})</b> — <i>${escapeHtml(c.direction || "Long")}</i> | Score: <b>${c.score ?? "-"}</b>\n   Reason: ${escapeHtml(c.verdictReason || "Passed filter criteria")}`
+      (c, idx) => {
+        const entryStr = c.entryPrice != null ? formatPrice(c.entryPrice) : "";
+        const stopStr = c.stopPrice != null ? formatPrice(c.stopPrice) : "-";
+        const targetStr = c.targetPrice != null ? formatPrice(c.targetPrice) : "-";
+        const priceInfo = entryStr ? `\n   Entry: ₹${entryStr} | SL: ₹${stopStr} | TGT: ₹${targetStr}` : "";
+        return `<b>${idx + 1}. ${escapeHtml(c.symbol)} (${escapeHtml(c.exchange || "NSE")})</b> — <i>${escapeHtml(c.direction || "Long")}</i> | Score: <b>${c.score ?? "-"}</b>${priceInfo}\n   Reason: ${escapeHtml(c.verdictReason || "Passed filter criteria")}`;
+      }
     )
     .join("\n\n") : "<i>No candidates currently qualified for this session.</i>";
 
@@ -1643,8 +1681,13 @@ ${rowsHtml}
 
   const rowsText = safeCandidates.length > 0 ? safeCandidates
     .map(
-      (c, idx) =>
-        `${idx + 1}. ${c.symbol} (${c.exchange || "NSE"}) - ${c.direction || "Long"} | Score: ${c.score ?? "-"}\n   Reason: ${c.verdictReason || "Passed filter criteria"}`
+      (c, idx) => {
+        const entryStr = c.entryPrice != null ? formatPrice(c.entryPrice) : "";
+        const stopStr = c.stopPrice != null ? formatPrice(c.stopPrice) : "-";
+        const targetStr = c.targetPrice != null ? formatPrice(c.targetPrice) : "-";
+        const priceInfo = entryStr ? `\n   Entry: ₹${entryStr} | SL: ₹${stopStr} | TGT: ₹${targetStr}` : "";
+        return `${idx + 1}. ${c.symbol} (${c.exchange || "NSE"}) - ${c.direction || "Long"} | Score: ${c.score ?? "-"}${priceInfo}\n   Reason: ${c.verdictReason || "Passed filter criteria"}`;
+      }
     )
     .join("\n\n") : "No candidates currently qualified for this session.";
 
@@ -1705,7 +1748,7 @@ function buildStageNotificationContent(stage: string, sessionDate: string, data:
   rejectedCount: number;
   symbols?: string[];
   message?: string;
-  topDetails?: Array<{ symbol: string; direction?: string; score?: number; entry?: number; stop?: number; target?: number }>;
+  topDetails?: Array<{ symbol: string; direction?: string; score?: number; entry?: any; stop?: any; target?: any }>;
 }) {
   const subject = `[PIPELINE: ${stage.toUpperCase()}] ${data.acceptedCount} Signals / Decisions - ${sessionDate}`;
   const dirIcon = (dir?: string) => dir?.toUpperCase() === "SHORT" ? "🔴 SHORT" : "🟢 LONG";
@@ -1716,7 +1759,7 @@ function buildStageNotificationContent(stage: string, sessionDate: string, data:
 <ul>
 ${data.topDetails.slice(0, 6).map((d) => `
   <li><b><code>${escapeHtml(d.symbol)}</code></b> | ${dirIcon(d.direction)} | Score: <b>${d.score ?? '-'}</b>/100
-  ${d.entry ? `<br>&nbsp;&nbsp;Entry: ₹${d.entry.toFixed(2)} | SL: ₹${d.stop?.toFixed(2) ?? '-'} | TGT: ₹${d.target?.toFixed(2) ?? '-'}` : ''}
+  ${d.entry != null ? `<br>  Entry: ₹${formatPrice(d.entry)} | SL: ₹${formatPrice(d.stop)} | TGT: ₹${formatPrice(d.target)}` : ''}
   </li>
 `).join("")}
 </ul>`
@@ -1745,47 +1788,59 @@ ${data.message || ''}
 
 function buildSingleResultAlertContent(candidate: {
   symbol: string;
-  exchange: string;
+  exchange?: string;
   stage?: string;
   direction?: string;
   score?: number;
-  entryPrice?: number;
-  stopPrice?: number;
-  targetPrice?: number;
+  entryPrice?: any;
+  stopPrice?: any;
+  targetPrice?: any;
   finalVerdict?: string;
   verdictReason?: string;
   reasons?: string[] | string;
   outcome?: string;
   sessionDate?: string;
 }) {
-  const dir = candidate.direction || "Long";
+  const symbol = String(candidate.symbol || "").trim().toUpperCase();
+  const exchange = String(candidate.exchange || "NSE").trim().toUpperCase();
+  const dir = String(candidate.direction || "Long").trim();
   const dirIcon = dir.toUpperCase() === "SHORT" ? "🔴" : "🟢";
-  const stage = candidate.stage || "Scanner Result";
-  const score = candidate.score ?? 85;
+  const stage = candidate.stage || "EOD Candidate";
+  const score = typeof candidate.score === "number" ? candidate.score : 85;
   const session = candidate.sessionDate || new Date().toISOString().slice(0, 10);
-  const subject = `[${stage.toUpperCase()}] ${dir.toUpperCase()} ${candidate.symbol} (${candidate.exchange}) Score ${score}/100`;
+  const subject = `[${stage.toUpperCase()}] ${dir.toUpperCase()} ${symbol} (${exchange}) Score ${score}/100`;
+
+  const entryStr = candidate.entryPrice != null ? formatPrice(candidate.entryPrice) : "";
+  const stopStr = candidate.stopPrice != null ? formatPrice(candidate.stopPrice) : "-";
+  const targetStr = candidate.targetPrice != null ? formatPrice(candidate.targetPrice) : "-";
+
+  const priceLineHtml = entryStr ? `<br><b>Entry:</b> ₹${entryStr} | <b>Stop Loss:</b> ₹${stopStr} | <b>Target:</b> ₹${targetStr}` : "";
+  const priceLineText = entryStr ? `Entry: ₹${entryStr} | SL: ₹${stopStr} | TGT: ₹${targetStr}\n` : "";
+
+  const reasonsText = Array.isArray(candidate.reasons)
+    ? candidate.reasons.join(", ")
+    : (candidate.reasons || "Technical breakout and trend alignment");
 
   const html = `
 <b>🔔 UNIVERSAL ENGINE SIGNAL NOTIFICATION</b>
-<b>Symbol:</b> <code>${escapeHtml(candidate.symbol)}</code> (${escapeHtml(candidate.exchange)})
+<b>Symbol:</b> <code>${escapeHtml(symbol)}</code> (${escapeHtml(exchange)})
 <b>Stage:</b> ${escapeHtml(stage)} | <b>Session:</b> ${escapeHtml(session)}
 <b>Direction:</b> ${dirIcon} <b>${escapeHtml(dir.toUpperCase())}</b> | <b>Score:</b> <b>${score}</b>/100
 <b>Outcome:</b> <b>${escapeHtml(candidate.outcome || candidate.finalVerdict || "Accepted")}</b>
 ${candidate.verdictReason ? `<br><b>Verdict Note:</b> ${escapeHtml(candidate.verdictReason)}` : ''}
-${candidate.entryPrice ? `<br><b>Entry:</b> ₹${candidate.entryPrice.toFixed(2)} | <b>Stop Loss:</b> ₹${candidate.stopPrice?.toFixed(2) ?? '-'} | <b>Target:</b> ₹${candidate.targetPrice?.toFixed(2) ?? '-'}` : ''}
-<br><b>Reasons:</b> ${escapeHtml(Array.isArray(candidate.reasons) ? candidate.reasons.join(", ") : (candidate.reasons || "Structural alignment"))}
-<br><i>⚠️ Manual admin broadcast from Universal Engine UI. Trader-authoritative alert.</i>
+${priceLineHtml}
+<br><b>Reasons:</b> ${escapeHtml(reasonsText)}
+<br><i>⚠️ Persisted scanner candidate signal from Universal Engine UI. Trader-authoritative alert.</i>
 `.trim();
 
   const text = `
 🔔 UNIVERSAL ENGINE SIGNAL NOTIFICATION
-Symbol: ${candidate.symbol} (${candidate.exchange})
+Symbol: ${symbol} (${exchange})
 Stage: ${stage} | Session: ${session}
 Direction: ${dir.toUpperCase()} | Score: ${score}/100
 Outcome: ${candidate.outcome || candidate.finalVerdict || "Accepted"}
-${candidate.verdictReason ? `Verdict: ${candidate.verdictReason}\n` : ''}
-${candidate.entryPrice ? `Entry: ₹${candidate.entryPrice.toFixed(2)} | SL: ₹${candidate.stopPrice?.toFixed(2)} | TGT: ₹${candidate.targetPrice?.toFixed(2)}\n` : ''}
-Reasons: ${Array.isArray(candidate.reasons) ? candidate.reasons.join(", ") : (candidate.reasons || "Structural alignment")}
+${candidate.verdictReason ? `Verdict: ${candidate.verdictReason}\n` : ''}${priceLineText}Reasons: ${reasonsText}
+Notice: Persisted scanner candidate signal. No order placed. Execution is trader-authoritative.
 `.trim();
 
   return { subject, html, text };
@@ -2277,7 +2332,7 @@ async function startServer() {
     res.json(run ? run.candidates : []);
   });
 
-  app.post("/pipeline/eod/run", (req: Request, res: Response) => {
+  app.post("/pipeline/eod/run", async (req: Request, res: Response) => {
     const sessionDate = (req.query.sessionDate as string) || new Date().toISOString().slice(0, 10);
     const newRunId = `eod-run-${Date.now()}`;
     const symbols = state.instruments.map((i) => i.symbol);
@@ -2333,26 +2388,36 @@ async function startServer() {
 
     const skipDuplicateCheck = req.body?.skipDuplicateCheck !== undefined
       ? Boolean(req.body.skipDuplicateCheck)
-      : (req.query.skipDuplicateCheck === "true" || true);
+      : (req.query.skipDuplicateCheck !== undefined ? req.query.skipDuplicateCheck === "true" : true);
+    const channelOverride = (req.query.channel as string) || (req.body?.channel as string) || (req.body?.channelOverride as string);
 
-    if (state.settings.notifications.sendEodWatchlistNotifications) {
-      const minScore = state.settings.notifications.minimumEodScoreToNotify;
-      const qualified = generated.filter((c) => c.outcome === "Accepted" && c.score >= minScore);
-      const targetAlert = qualified.length > 0 ? qualified : generated.filter((c) => c.outcome === "Accepted");
-      const watchlistAlert = buildWatchlistAlertContent(sessionDate, targetAlert);
-      void dispatchAlertNotification(watchlistAlert.subject, watchlistAlert.html, watchlistAlert.text, undefined, {
-        skipDuplicateCheck: Boolean(skipDuplicateCheck),
-        stageName: "EOD"
-      });
-    } else {
-      void dispatchAlertNotification(
-        `EOD Scan Run: ${acceptedCount} candidates qualified for ${sessionDate}`,
-        `<b>EOD Scan Completed</b><br>Session: ${escapeHtml(sessionDate)}<br>Accepted: <b>${acceptedCount}</b> | Rejected: ${rejectedCount}`,
-        `EOD Scan Completed\nSession: ${sessionDate}\nAccepted: ${acceptedCount} | Rejected: ${rejectedCount}`,
-        undefined,
-        { skipDuplicateCheck: Boolean(skipDuplicateCheck), stageName: "EOD" }
-      );
+    let notificationResults: NotificationResult[] = [];
+    try {
+      if (state.settings.notifications.sendEodWatchlistNotifications) {
+        const minScore = state.settings.notifications.minimumEodScoreToNotify;
+        const qualified = generated.filter((c) => c.outcome === "Accepted" && c.score >= minScore);
+        const targetAlert = qualified.length > 0 ? qualified : generated.filter((c) => c.outcome === "Accepted");
+        const watchlistAlert = buildWatchlistAlertContent(sessionDate, targetAlert);
+        notificationResults = await dispatchAlertNotification(watchlistAlert.subject, watchlistAlert.html, watchlistAlert.text, channelOverride, {
+          skipDuplicateCheck: Boolean(skipDuplicateCheck),
+          stageName: "EOD"
+        });
+      } else {
+        notificationResults = await dispatchAlertNotification(
+          `EOD Scan Run: ${acceptedCount} candidates qualified for ${sessionDate}`,
+          `<b>EOD Scan Completed</b><br>Session: ${escapeHtml(sessionDate)}<br>Accepted: <b>${acceptedCount}</b> | Rejected: ${rejectedCount}`,
+          `EOD Scan Completed\nSession: ${sessionDate}\nAccepted: ${acceptedCount} | Rejected: ${rejectedCount}`,
+          channelOverride,
+          { skipDuplicateCheck: Boolean(skipDuplicateCheck), stageName: "EOD" }
+        );
+      }
+    } catch (notifErr: any) {
+      console.error("EOD dispatch error:", notifErr);
     }
+
+    const notifSummary = notificationResults.length > 0
+      ? ` Notifications dispatched via ${notificationResults.filter(r => r.isSuccess).map(r => r.channel).join(", ") || "configured channel"}.`
+      : "";
 
     res.json({
       stage: "EOD",
@@ -2361,7 +2426,9 @@ async function startServer() {
       evaluatedCount: generated.length,
       acceptedCount,
       rejectedCount,
-      message: `EOD scanner run completed with ${acceptedCount} accepted candidates.`
+      candidates: generated,
+      notificationResults,
+      message: `EOD scanner run completed with ${acceptedCount} accepted candidates.${notifSummary}`
     });
   });
 
@@ -2376,7 +2443,7 @@ async function startServer() {
     res.json(run ? run.decisions : []);
   });
 
-  app.post("/pipeline/pre-market/run", (req: Request, res: Response) => {
+  app.post("/pipeline/pre-market/run", async (req: Request, res: Response) => {
     const sessionDate = (req.query.sessionDate as string) || new Date().toISOString().slice(0, 10);
     const newRunId = `pm-run-${Date.now()}`;
     const latestEod = state.scannerRuns[0];
@@ -2427,6 +2494,7 @@ async function startServer() {
     });
 
     const skipDuplicateCheck = req.body?.skipDuplicateCheck ?? (req.query.skipDuplicateCheck === "true");
+    const channelOverride = (req.query.channel as string) || (req.body?.channel as string);
     const pmAlert = buildStageNotificationContent("Pre-market", sessionDate, {
       evaluatedCount: decisions.length,
       acceptedCount,
@@ -2442,10 +2510,20 @@ async function startServer() {
       })),
       message: `Pre-market validation completed: ${acceptedCount} signals qualified within gap threshold.`
     });
-    void dispatchAlertNotification(pmAlert.subject, pmAlert.html, pmAlert.text, undefined, {
-      skipDuplicateCheck,
-      stageName: "Pre-market"
-    });
+
+    let notificationResults: NotificationResult[] = [];
+    try {
+      notificationResults = await dispatchAlertNotification(pmAlert.subject, pmAlert.html, pmAlert.text, channelOverride, {
+        skipDuplicateCheck,
+        stageName: "Pre-market"
+      });
+    } catch (err: any) {
+      console.error("Pre-market dispatch error:", err);
+    }
+
+    const notifSummary = notificationResults.length > 0
+      ? ` Notifications dispatched via ${notificationResults.filter(r => r.isSuccess).map(r => r.channel).join(", ") || "configured channel"}.`
+      : "";
 
     res.json({
       stage: "Pre-market",
@@ -2454,7 +2532,8 @@ async function startServer() {
       evaluatedCount: decisions.length,
       acceptedCount,
       rejectedCount,
-      message: `Pre-market filter run completed. ${acceptedCount} candidates validated.`
+      notificationResults,
+      message: `Pre-market filter run completed. ${acceptedCount} candidates validated.${notifSummary}`
     });
   });
 
@@ -2469,7 +2548,7 @@ async function startServer() {
     res.json(run ? run.decisions : []);
   });
 
-  app.post("/pipeline/opening-range/run", (req: Request, res: Response) => {
+  app.post("/pipeline/opening-range/run", async (req: Request, res: Response) => {
     const sessionDate = (req.query.sessionDate as string) || new Date().toISOString().slice(0, 10);
     const newRunId = `orb-run-${Date.now()}`;
     const latestPm = state.preMarketRuns[0];
@@ -2581,41 +2660,51 @@ async function startServer() {
     });
 
     const skipDuplicateCheck = req.body?.skipDuplicateCheck ?? (req.query.skipDuplicateCheck === "true");
+    const channelOverride = (req.query.channel as string) || (req.body?.channel as string) || (req.body?.channelOverride as string);
 
+    let notificationResults: NotificationResult[] = [];
     const acceptedSignals = decisions.filter((d) => d.outcome === "Accepted");
-    if (acceptedSignals.length > 0) {
-      const topSignal = acceptedSignals[0];
-      const alert = buildTradeAlertContent({
-        symbol: topSignal.symbol,
-        exchange: topSignal.exchange,
-        direction: topSignal.direction || "Long",
-        stage: `Opening Range Breakout (RVOL: ${topSignal.breakoutRvol}x | ATR: ₹${topSignal.atr14})`,
-        score: topSignal.score || 85,
-        entryPrice: topSignal.entryPrice || 2500,
-        stopPrice: topSignal.stopPrice || 2470,
-        targetPrice: topSignal.targetPrice || 2560,
-        quantity: topSignal.quantity || 40,
-        notionalAmount: topSignal.notionalAmount || 100000,
-        plannedRiskAmount: topSignal.plannedRiskAmount || 950,
-        reasons: ["OpeningRangeBreakout", `RVOL_${topSignal.breakoutRvol}x`, `Index_${topSignal.indexConfluence?.indexSymbol}_Aligned`],
-        sessionDate
-      });
-      void dispatchAlertNotification(alert.subject, alert.html, alert.text, undefined, {
-        skipDuplicateCheck,
-        stageName: "Opening range"
-      });
-    } else {
-      const orbAlert = buildStageNotificationContent("Opening range", sessionDate, {
-        evaluatedCount: decisions.length,
-        acceptedCount: 0,
-        rejectedCount: decisions.length,
-        message: `Opening range scanner completed: 0 signals passed index confluence and RVOL filters (saved from whipsaws).`
-      });
-      void dispatchAlertNotification(orbAlert.subject, orbAlert.html, orbAlert.text, undefined, {
-        skipDuplicateCheck,
-        stageName: "Opening range"
-      });
+    try {
+      if (acceptedSignals.length > 0) {
+        const topSignal = acceptedSignals[0];
+        const alert = buildTradeAlertContent({
+          symbol: topSignal.symbol,
+          exchange: topSignal.exchange,
+          direction: topSignal.direction || "Long",
+          stage: `Opening Range Breakout (RVOL: ${topSignal.breakoutRvol}x | ATR: ₹${topSignal.atr14})`,
+          score: topSignal.score || 85,
+          entryPrice: topSignal.entryPrice || 2500,
+          stopPrice: topSignal.stopPrice || 2470,
+          targetPrice: topSignal.targetPrice || 2560,
+          quantity: topSignal.quantity || 40,
+          notionalAmount: topSignal.notionalAmount || 100000,
+          plannedRiskAmount: topSignal.plannedRiskAmount || 950,
+          reasons: ["OpeningRangeBreakout", `RVOL_${topSignal.breakoutRvol}x`, `Index_${topSignal.indexConfluence?.indexSymbol}_Aligned`],
+          sessionDate
+        });
+        notificationResults = await dispatchAlertNotification(alert.subject, alert.html, alert.text, channelOverride, {
+          skipDuplicateCheck,
+          stageName: "Opening range"
+        });
+      } else {
+        const orbAlert = buildStageNotificationContent("Opening range", sessionDate, {
+          evaluatedCount: decisions.length,
+          acceptedCount: 0,
+          rejectedCount: decisions.length,
+          message: `Opening range scanner completed: 0 signals passed index confluence and RVOL filters (saved from whipsaws).`
+        });
+        notificationResults = await dispatchAlertNotification(orbAlert.subject, orbAlert.html, orbAlert.text, channelOverride, {
+          skipDuplicateCheck,
+          stageName: "Opening range"
+        });
+      }
+    } catch (err: any) {
+      console.error("Opening range dispatch error:", err);
     }
+
+    const notifSummary = notificationResults.length > 0
+      ? ` Notifications dispatched via ${notificationResults.filter(r => r.isSuccess).map(r => r.channel).join(", ") || "configured channel"}.`
+      : "";
 
     res.json({
       stage: "Opening range",
@@ -2624,7 +2713,8 @@ async function startServer() {
       evaluatedCount: decisions.length,
       acceptedCount,
       rejectedCount,
-      message: `Opening range scanner completed with ${acceptedCount} signals qualified, ${rejectedCount} filtered by regime/RVOL.`
+      notificationResults,
+      message: `Opening range scanner completed with ${acceptedCount} signals qualified, ${rejectedCount} filtered by regime/RVOL.${notifSummary}`
     });
   });
 
@@ -2639,7 +2729,7 @@ async function startServer() {
     res.json(run ? run.decisions : []);
   });
 
-  app.post("/pipeline/live-validation/run", (req: Request, res: Response) => {
+  app.post("/pipeline/live-validation/run", async (req: Request, res: Response) => {
     const sessionDate = (req.query.sessionDate as string) || new Date().toISOString().slice(0, 10);
     const newRunId = `live-run-${Date.now()}`;
     const latestOrb = state.openingRangeRuns[0];
@@ -2656,6 +2746,7 @@ async function startServer() {
     });
 
     const skipDuplicateCheck = req.body?.skipDuplicateCheck ?? (req.query.skipDuplicateCheck === "true");
+    const channelOverride = (req.query.channel as string) || (req.body?.channel as string) || (req.body?.channelOverride as string);
     const liveAlert = buildStageNotificationContent("Live validation", sessionDate, {
       evaluatedCount: decisions.length,
       acceptedCount: decisions.length,
@@ -2671,10 +2762,20 @@ async function startServer() {
       })),
       message: `Live tick validation confirmed ${decisions.length} trades against real-time order books.`
     });
-    void dispatchAlertNotification(liveAlert.subject, liveAlert.html, liveAlert.text, undefined, {
-      skipDuplicateCheck,
-      stageName: "Live validation"
-    });
+
+    let notificationResults: NotificationResult[] = [];
+    try {
+      notificationResults = await dispatchAlertNotification(liveAlert.subject, liveAlert.html, liveAlert.text, channelOverride, {
+        skipDuplicateCheck,
+        stageName: "Live validation"
+      });
+    } catch (err: any) {
+      console.error("Live validation dispatch error:", err);
+    }
+
+    const notifSummary = notificationResults.length > 0
+      ? ` Notifications dispatched via ${notificationResults.filter(r => r.isSuccess).map(r => r.channel).join(", ") || "configured channel"}.`
+      : "";
 
     res.json({
       stage: "Live validation",
@@ -2683,7 +2784,8 @@ async function startServer() {
       evaluatedCount: decisions.length,
       acceptedCount: decisions.length,
       rejectedCount: 0,
-      message: `Live validation active for ${decisions.length} trades.`
+      notificationResults,
+      message: `Live validation active for ${decisions.length} trades.${notifSummary}`
     });
   });
 
@@ -2698,7 +2800,7 @@ async function startServer() {
     res.json(run ? run.events : []);
   });
 
-  app.post("/pipeline/monitor/run", (req: Request, res: Response) => {
+  app.post("/pipeline/monitor/run", async (req: Request, res: Response) => {
     const sessionDate = (req.query.sessionDate as string) || new Date().toISOString().slice(0, 10);
     const newRunId = `mon-run-${Date.now()}`;
     const events: MonitorEvent[] = [
@@ -2729,6 +2831,7 @@ async function startServer() {
     });
 
     const skipDuplicateCheck = req.body?.skipDuplicateCheck ?? (req.query.skipDuplicateCheck === "true");
+    const channelOverride = (req.query.channel as string) || (req.body?.channel as string) || (req.body?.channelOverride as string);
     const monSubject = `[MONITOR UPDATE] ${events.length} Position Alerts for ${sessionDate}`;
     const monHtml = `
 <b>📡 POSITION MONITORING UPDATE</b><br>
@@ -2736,10 +2839,16 @@ Session: <b>${escapeHtml(sessionDate)}</b> | Events: <b>${events.length}</b><br>
 ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml(e.direction || "Long")}): <span style="color:#0284c7;font-weight:bold;">${escapeHtml(e.status)}</span> @ ₹${(e.latestPrice ?? 0).toFixed(2)} - <i>${escapeHtml(e.reason)}</i>`).join("<br>")}
 `.trim();
     const monText = `MONITORING UPDATE (${sessionDate})\n${events.map(e => `${e.symbol} (${e.direction || "Long"}): ${e.status} @ ₹${e.latestPrice ?? "-"} - ${e.reason}`).join("\n")}`;
-    void dispatchAlertNotification(monSubject, monHtml, monText, undefined, {
-      skipDuplicateCheck,
-      stageName: "Monitor"
-    });
+
+    let notificationResults: NotificationResult[] = [];
+    try {
+      notificationResults = await dispatchAlertNotification(monSubject, monHtml, monText, channelOverride, {
+        skipDuplicateCheck,
+        stageName: "Monitor"
+      });
+    } catch (err: any) {
+      console.error("Monitor dispatch error:", err);
+    }
 
     res.json({
       stage: "Monitoring",
@@ -2748,6 +2857,7 @@ ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml
       evaluatedCount: events.length,
       acceptedCount: events.length,
       rejectedCount: 0,
+      notificationResults,
       message: `Signal monitoring update recorded ${events.length} position status changes.`
     });
   });
@@ -2865,7 +2975,7 @@ ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml
     res.json(run ? run.orders : []);
   });
 
-  app.post("/paper-trading/run", (req: Request, res: Response) => {
+  app.post("/paper-trading/run", async (req: Request, res: Response) => {
     const sessionDate = (req.query.sessionDate as string) || new Date().toISOString().slice(0, 10);
     const newRunId = `paper-run-${Date.now()}`;
     const latestOrb = state.openingRangeRuns[0];
@@ -2900,6 +3010,7 @@ ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml
     });
 
     const skipDuplicateCheck = req.body?.skipDuplicateCheck ?? (req.query.skipDuplicateCheck === "true");
+    const channelOverride = (req.query.channel as string) || (req.body?.channel as string) || (req.body?.channelOverride as string);
     const paperAlert = buildStageNotificationContent("Paper Trading", sessionDate, {
       evaluatedCount: orders.length,
       acceptedCount: orders.length,
@@ -2914,10 +3025,16 @@ ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml
       })),
       message: `Paper trading orders generated: ${orders.length} positions open.`
     });
-    void dispatchAlertNotification(paperAlert.subject, paperAlert.html, paperAlert.text, undefined, {
-      skipDuplicateCheck,
-      stageName: "Paper trading"
-    });
+
+    let notificationResults: NotificationResult[] = [];
+    try {
+      notificationResults = await dispatchAlertNotification(paperAlert.subject, paperAlert.html, paperAlert.text, channelOverride, {
+        skipDuplicateCheck,
+        stageName: "Paper trading"
+      });
+    } catch (err: any) {
+      console.error("Paper trading dispatch error:", err);
+    }
 
     res.json({
       stage: "PaperTrading",
@@ -2926,6 +3043,7 @@ ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml
       evaluatedCount: orders.length,
       acceptedCount: orders.length,
       rejectedCount: 0,
+      notificationResults,
       message: `Paper trading orders generated: ${orders.length} positions opened.`
     });
   });
@@ -2957,7 +3075,7 @@ ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml
     res.json(run ? run.decisions : []);
   });
 
-  app.post("/ai/run", (req: Request, res: Response) => {
+  app.post("/ai/run", async (req: Request, res: Response) => {
     const sessionDate = (req.query.sessionDate as string) || new Date().toISOString().slice(0, 10);
     const newRunId = `ai-run-${Date.now()}`;
     const latestEod = state.scannerRuns[0];
@@ -2995,6 +3113,7 @@ ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml
     });
 
     const skipDuplicateCheck = req.body?.skipDuplicateCheck ?? (req.query.skipDuplicateCheck === "true");
+    const channelOverride = (req.query.channel as string) || (req.body?.channel as string) || (req.body?.channelOverride as string);
     const aiAlert = buildStageNotificationContent("AI Analysis", sessionDate, {
       evaluatedCount: decisions.length,
       acceptedCount: tradeCandidateCount,
@@ -3002,10 +3121,16 @@ ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml
       symbols: decisions.filter((d) => d.recommendation === "BUY_CANDIDATE").map((d) => d.symbol),
       message: `AI Analysis complete: ${tradeCandidateCount} BUY_CANDIDATES produced (${state.settings.ai.promptVersion}).`
     });
-    void dispatchAlertNotification(aiAlert.subject, aiAlert.html, aiAlert.text, undefined, {
-      skipDuplicateCheck,
-      stageName: "AI analysis"
-    });
+
+    let notificationResults: NotificationResult[] = [];
+    try {
+      notificationResults = await dispatchAlertNotification(aiAlert.subject, aiAlert.html, aiAlert.text, channelOverride, {
+        skipDuplicateCheck,
+        stageName: "AI analysis"
+      });
+    } catch (err: any) {
+      console.error("AI analysis dispatch error:", err);
+    }
 
     res.json({
       stage: "AiAnalysis",
@@ -3014,6 +3139,7 @@ ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml
       evaluatedCount: decisions.length,
       acceptedCount: tradeCandidateCount,
       rejectedCount: 0,
+      notificationResults,
       message: `AI analysis completed: ${tradeCandidateCount} buy recommendations produced.`
     });
   });
@@ -3080,172 +3206,190 @@ ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml
 
   // Notification for a single candidate or scan result (accessible to all authenticated traders & admins)
   app.post("/notifications/send-candidate", requireNotificationAccess, async (req: Request, res: Response) => {
-    const {
-      symbol,
-      exchange = "NSE",
-      stage = "EOD Candidate",
-      direction,
-      score,
-      entryPrice,
-      stopPrice,
-      targetPrice,
-      reasons,
-      verdictReason,
-      outcome,
-      sessionDate = new Date().toISOString().slice(0, 10),
-      channelOverride,
-      forceSend = false,
-      skipDuplicateCheck
-    } = req.body || {};
+    try {
+      const {
+        symbol,
+        exchange = "NSE",
+        stage = "EOD Candidate",
+        direction,
+        score,
+        entryPrice,
+        stopPrice,
+        targetPrice,
+        reasons,
+        verdictReason,
+        outcome,
+        sessionDate = new Date().toISOString().slice(0, 10),
+        channelOverride,
+        forceSend = false,
+        skipDuplicateCheck
+      } = req.body || {};
 
-    if (!symbol) {
-      return res.status(400).json({ error: "Symbol is required to send notification." });
-    }
-
-    // Manual single-candidate notifications are deliberate user clicks:
-    // Bypass duplicate suppression if forceSend is true, if skipDuplicateCheck is true, or if skipDuplicateCheck was not explicitly set to false.
-    const shouldBypassDuplicates = forceSend === true || skipDuplicateCheck === true || (skipDuplicateCheck === undefined);
-
-    const alertContent = buildSingleResultAlertContent({
-      symbol,
-      exchange,
-      stage,
-      direction,
-      score,
-      entryPrice,
-      stopPrice,
-      targetPrice,
-      reasons,
-      verdictReason,
-      outcome,
-      sessionDate
-    });
-
-    const results = await dispatchAlertNotification(
-      alertContent.subject,
-      alertContent.html,
-      alertContent.text,
-      channelOverride,
-      {
-        skipDuplicateCheck: shouldBypassDuplicates,
-        candidateSymbol: symbol,
-        stageName: stage
+      if (!symbol) {
+        return res.status(400).json({ error: "Symbol is required to send notification." });
       }
-    );
 
-    const isDuplicate = results.some((r) => r.isDuplicate);
-    const anySuccess = results.some((r) => r.isSuccess);
+      // Manual single-candidate notifications are deliberate user clicks:
+      // Bypass duplicate suppression if forceSend is true, if skipDuplicateCheck is true, or if skipDuplicateCheck was not explicitly set to false.
+      const shouldBypassDuplicates = forceSend === true || skipDuplicateCheck === true || (skipDuplicateCheck === undefined);
 
-    state.eventLogs.unshift({
-      id: state.eventLogs.length + 1,
-      eventType: "ManualResultNotificationDispatched",
-      subject: `${symbol}:${stage}`,
-      payloadJson: JSON.stringify({ symbol, stage, skipDuplicateCheck: shouldBypassDuplicates, results }),
-      createdAtUtc: new Date().toISOString()
-    });
+      const alertContent = buildSingleResultAlertContent({
+        symbol,
+        exchange,
+        stage,
+        direction,
+        score,
+        entryPrice,
+        stopPrice,
+        targetPrice,
+        reasons,
+        verdictReason,
+        outcome,
+        sessionDate
+      });
 
-    res.json({
-      success: anySuccess,
-      isDuplicate,
-      skipDuplicateCheck: shouldBypassDuplicates,
-      results,
-      symbol,
-      message: isDuplicate
-        ? `Duplicate notification blocked. Check 'Send without duplicate check' or click 'Force Send Now' to bypass duplicate suppression.`
-        : anySuccess
-        ? `Notification dispatched for ${symbol} via ${results.filter((r) => r.isSuccess).map((r) => r.channel).join(", ")}.`
-        : `Notification delivery failed: ${results.map((r) => r.errorMessage).join("; ")}`
-    });
+      const results = await dispatchAlertNotification(
+        alertContent.subject,
+        alertContent.html,
+        alertContent.text,
+        channelOverride,
+        {
+          skipDuplicateCheck: shouldBypassDuplicates,
+          candidateSymbol: symbol,
+          stageName: stage
+        }
+      );
+
+      const isDuplicate = results.some((r) => r.isDuplicate);
+      const anySuccess = results.some((r) => r.isSuccess);
+
+      state.eventLogs.unshift({
+        id: state.eventLogs.length + 1,
+        eventType: "ManualResultNotificationDispatched",
+        subject: `${symbol}:${stage}`,
+        payloadJson: JSON.stringify({ symbol, stage, skipDuplicateCheck: shouldBypassDuplicates, results }),
+        createdAtUtc: new Date().toISOString()
+      });
+
+      return res.json({
+        success: anySuccess,
+        isDuplicate,
+        skipDuplicateCheck: shouldBypassDuplicates,
+        results,
+        symbol,
+        message: isDuplicate
+          ? `Duplicate notification blocked. Check 'Send without duplicate check' or click 'Force Send Now' to bypass duplicate suppression.`
+          : anySuccess
+          ? `Notification dispatched for ${symbol} via ${results.filter((r) => r.isSuccess).map((r) => r.channel).join(", ") || "configured channel"}.`
+          : `Notification delivery failed: ${results.map((r) => r.errorMessage).join("; ")}`
+      });
+    } catch (err: any) {
+      console.error("Error in /notifications/send-candidate:", err);
+      return res.status(500).json({
+        success: false,
+        error: "Failed to dispatch notification",
+        message: err.message || "Internal server error during notification dispatch."
+      });
+    }
   });
 
   // Broadcast for stage results (accessible to all authenticated traders & admins)
   app.post("/notifications/broadcast-stage-results", requireNotificationAccess, async (req: Request, res: Response) => {
-    const {
-      stage = "EOD",
-      sessionDate = new Date().toISOString().slice(0, 10),
-      items = [],
-      channelOverride,
-      forceSend = false,
-      skipDuplicateCheck
-    } = req.body || {};
+    try {
+      const {
+        stage = "EOD",
+        sessionDate = new Date().toISOString().slice(0, 10),
+        items = [],
+        channelOverride,
+        forceSend = false,
+        skipDuplicateCheck
+      } = req.body || {};
 
-    const shouldBypassDuplicates = forceSend === true || skipDuplicateCheck === true || (skipDuplicateCheck === undefined);
+      const shouldBypassDuplicates = forceSend === true || skipDuplicateCheck === true || (skipDuplicateCheck === undefined);
 
-    let content;
-    if (stage === "EOD") {
-      let candidates: Candidate[] = items.length > 0 ? items : (state.scannerRuns[0]?.candidates || []);
-      if (candidates.length === 0) {
-        // Fallback to top instruments if scanner has not run yet
-        candidates = state.instruments.slice(0, 5).map((inst, idx) => {
-          const basePrice = inst.lastPrice ?? (1000 + idx * 250);
-          return {
-            symbol: inst.symbol,
-            exchange: inst.exchange || "NSE",
-            outcome: idx < 3 ? "Accepted" : "Rejected",
-            direction: idx % 2 === 0 ? "Long" : "Short",
-            score: 80 - idx * 5,
-            entryPrice: basePrice,
-            stopPrice: Math.round(basePrice * 0.985 * 100) / 100,
-            targetPrice: Math.round(basePrice * 1.03 * 100) / 100,
-            finalVerdict: idx < 3 ? "Accepted" : "Rejected",
-            verdictReason: idx < 3 ? "Sector strength confirmation" : "Momentum threshold not met",
-            reasonsJson: JSON.stringify([{ code: "EodQualified" }])
-          };
+      let content;
+      if (stage === "EOD") {
+        let candidates: Candidate[] = items.length > 0 ? items : (state.scannerRuns[0]?.candidates || []);
+        if (candidates.length === 0) {
+          // Fallback to top instruments if scanner has not run yet
+          candidates = state.instruments.slice(0, 5).map((inst, idx) => {
+            const basePrice = inst.lastPrice ?? (1000 + idx * 250);
+            return {
+              symbol: inst.symbol,
+              exchange: inst.exchange || "NSE",
+              outcome: idx < 3 ? "Accepted" : "Rejected",
+              direction: idx % 2 === 0 ? "Long" : "Short",
+              score: 80 - idx * 5,
+              entryPrice: basePrice,
+              stopPrice: Math.round(basePrice * 0.985 * 100) / 100,
+              targetPrice: Math.round(basePrice * 1.03 * 100) / 100,
+              finalVerdict: idx < 3 ? "Accepted" : "Rejected",
+              verdictReason: idx < 3 ? "Sector strength confirmation" : "Momentum threshold not met",
+              reasonsJson: JSON.stringify([{ code: "EodQualified" }])
+            };
+          });
+        }
+        const qualified = candidates.filter((c) => c.outcome === "Accepted");
+        content = buildWatchlistAlertContent(sessionDate, qualified.length > 0 ? qualified : candidates);
+      } else {
+        content = buildStageNotificationContent(stage, sessionDate, {
+          evaluatedCount: items.length,
+          acceptedCount: items.filter((i: any) => i.outcome === "Accepted" || i.outcome === "BUY_CANDIDATE").length || items.length,
+          rejectedCount: items.filter((i: any) => i.outcome === "Rejected").length,
+          symbols: items.map((i: any) => i.symbol),
+          topDetails: items.slice(0, 8).map((i: any) => ({
+            symbol: i.symbol,
+            direction: i.direction,
+            score: i.score,
+            entry: i.entryPrice,
+            stop: i.stopPrice,
+            target: i.targetPrice
+          })),
+          message: `Manual broadcast of ${stage} results.`
         });
       }
-      const qualified = candidates.filter((c) => c.outcome === "Accepted");
-      content = buildWatchlistAlertContent(sessionDate, qualified.length > 0 ? qualified : candidates);
-    } else {
-      content = buildStageNotificationContent(stage, sessionDate, {
-        evaluatedCount: items.length,
-        acceptedCount: items.filter((i: any) => i.outcome === "Accepted" || i.outcome === "BUY_CANDIDATE").length || items.length,
-        rejectedCount: items.filter((i: any) => i.outcome === "Rejected").length,
-        symbols: items.map((i: any) => i.symbol),
-        topDetails: items.slice(0, 8).map((i: any) => ({
-          symbol: i.symbol,
-          direction: i.direction,
-          score: i.score,
-          entry: i.entryPrice,
-          stop: i.stopPrice,
-          target: i.targetPrice
-        })),
-        message: `Manual broadcast of ${stage} results.`
+
+      const results = await dispatchAlertNotification(
+        content.subject,
+        content.html,
+        content.text,
+        channelOverride,
+        {
+          skipDuplicateCheck: shouldBypassDuplicates,
+          stageName: stage
+        }
+      );
+
+      const isDuplicate = results.some((r) => r.isDuplicate);
+      const anySuccess = results.some((r) => r.isSuccess);
+
+      state.eventLogs.unshift({
+        id: state.eventLogs.length + 1,
+        eventType: "StageResultsBroadcast",
+        subject: `${stage}:${sessionDate}`,
+        payloadJson: JSON.stringify({ stage, itemCount: items.length, skipDuplicateCheck: shouldBypassDuplicates, results }),
+        createdAtUtc: new Date().toISOString()
+      });
+
+      return res.json({
+        success: anySuccess,
+        isDuplicate,
+        skipDuplicateCheck: shouldBypassDuplicates,
+        results,
+        message: isDuplicate
+          ? `Broadcast blocked as recent duplicate. Enable 'Send without duplicate check' or click 'Force Send Now' to force delivery.`
+          : anySuccess
+          ? `Broadcast for ${stage} sent successfully to ${results.filter((r) => r.isSuccess).map((r) => r.channel).join(", ") || "configured channel"}.`
+          : `Broadcast failed: ${results.map((r) => r.errorMessage).join("; ")}`
+      });
+    } catch (err: any) {
+      console.error("Error in /notifications/broadcast-stage-results:", err);
+      return res.status(500).json({
+        success: false,
+        error: "Failed to broadcast stage results",
+        message: err.message || "Internal server error during stage broadcast."
       });
     }
-
-    const results = await dispatchAlertNotification(
-      content.subject,
-      content.html,
-      content.text,
-      channelOverride,
-      {
-        skipDuplicateCheck: shouldBypassDuplicates,
-        stageName: stage
-      }
-    );
-
-    const isDuplicate = results.some((r) => r.isDuplicate);
-    const anySuccess = results.some((r) => r.isSuccess);
-
-    state.eventLogs.unshift({
-      id: state.eventLogs.length + 1,
-      eventType: "StageResultsBroadcast",
-      subject: `${stage}:${sessionDate}`,
-      payloadJson: JSON.stringify({ stage, itemCount: items.length, skipDuplicateCheck: shouldBypassDuplicates, results }),
-      createdAtUtc: new Date().toISOString()
-    });
-
-    res.json({
-      success: anySuccess,
-      isDuplicate,
-      skipDuplicateCheck: shouldBypassDuplicates,
-      results,
-      message: isDuplicate
-        ? `Broadcast blocked as recent duplicate. Enable 'Send without duplicate check' or click 'Force Send Now' to force delivery.`
-        : anySuccess
-        ? `Broadcast for ${stage} sent successfully to ${results.filter((r) => r.isSuccess).map((r) => r.channel).join(", ")}.`
-        : `Broadcast failed: ${results.map((r) => r.errorMessage).join("; ")}`
-    });
   });
 
   // Feedback
