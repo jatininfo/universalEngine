@@ -72,6 +72,9 @@ type Candidate = {
   outcome: string;
   direction?: string;
   score: number;
+  entryPrice?: number;
+  stopPrice?: number;
+  targetPrice?: number;
   finalVerdict?: string;
   verdictReason?: string;
   reasonsJson: string;
@@ -629,12 +632,21 @@ function App() {
   const [runResult, setRunResult] = React.useState<PipelineRunResult | null>(null);
   const [lastRefresh, setLastRefresh] = React.useState<Date | null>(null);
   const [testingNotificationChannel, setTestingNotificationChannel] = React.useState<string | null>(null);
-  const [sendWithoutDuplicateCheck, setSendWithoutDuplicateCheck] = React.useState<boolean>(false);
+  const [sendWithoutDuplicateCheck, setSendWithoutDuplicateCheck] = React.useState<boolean>(true);
   const [notifyingCandidateSymbol, setNotifyingCandidateSymbol] = React.useState<string | null>(null);
   const [broadcastingStage, setBroadcastingStage] = React.useState<string | null>(null);
+  const [recentNotifiedCandidates, setRecentNotifiedCandidates] = React.useState<Record<string, {
+    time: string;
+    status: "success" | "duplicate" | "error";
+    channel?: string;
+    message?: string;
+  }>>({});
   const [notificationStatusBanner, setNotificationStatusBanner] = React.useState<{
     success: boolean;
     message: string;
+    isDuplicate?: boolean;
+    candidateSymbol?: string;
+    onForceResend?: () => void;
   } | null>(null);
 
   // Authentication & User Management State
@@ -652,10 +664,13 @@ function App() {
   const isSettingsAdmin = Boolean(
     currentUser && (
       currentUser.email.toLowerCase() === "indurotech.jp@gmail.com" ||
+      currentUser.email.toLowerCase() === "tejas.p.singh@gmail.com" ||
       currentUser.role === "Super Admin" ||
       currentUser.role === "Admin"
     )
   );
+  // All authenticated users have access to trigger candidate and stage notifications
+  const canSendNotifications = Boolean(currentUser);
   const [users, setUsers] = React.useState<AppUser[]>([]);
   const [sentEmails, setSentEmails] = React.useState<SentEmail[]>([]);
   const [isOAuthModalOpen, setIsOAuthModalOpen] = React.useState(false);
@@ -796,6 +811,7 @@ function App() {
     try {
       const isSettingsAdmin = Boolean(
         activeUserEmailHeader.toLowerCase() === "indurotech.jp@gmail.com" ||
+        activeUserEmailHeader.toLowerCase() === "tejas.p.singh@gmail.com" ||
         currentUser?.role === "Super Admin" ||
         currentUser?.role === "Admin"
       );
@@ -950,6 +966,7 @@ function App() {
   React.useEffect(() => {
     const hasAdminAccess = Boolean(
       activeUserEmailHeader.toLowerCase() === "indurotech.jp@gmail.com" ||
+      activeUserEmailHeader.toLowerCase() === "tejas.p.singh@gmail.com" ||
       currentUser?.role === "Super Admin" ||
       currentUser?.role === "Admin"
     );
@@ -1070,20 +1087,23 @@ function App() {
     }
   }
 
-  async function handleSendCandidateNotification(candidate: {
-    symbol: string;
-    exchange?: string;
-    stage?: string;
-    direction?: string;
-    score?: number;
-    entryPrice?: number;
-    stopPrice?: number;
-    targetPrice?: number;
-    finalVerdict?: string;
-    verdictReason?: string;
-    reasonsJson?: string;
-    outcome?: string;
-  }) {
+  async function handleSendCandidateNotification(
+    candidate: {
+      symbol: string;
+      exchange?: string;
+      stage?: string;
+      direction?: string;
+      score?: number;
+      entryPrice?: number;
+      stopPrice?: number;
+      targetPrice?: number;
+      finalVerdict?: string;
+      verdictReason?: string;
+      reasonsJson?: string;
+      outcome?: string;
+    },
+    forceSend: boolean = false
+  ) {
     setNotifyingCandidateSymbol(candidate.symbol);
     try {
       const res = await postJson<{
@@ -1095,7 +1115,7 @@ function App() {
       }>("/notifications/send-candidate", {
         symbol: candidate.symbol,
         exchange: candidate.exchange || "NSE",
-        stage: candidate.stage || "Scanner Result",
+        stage: candidate.stage || "EOD Candidate",
         direction: candidate.direction || "Long",
         score: candidate.score,
         entryPrice: candidate.entryPrice,
@@ -1105,12 +1125,27 @@ function App() {
         verdictReason: candidate.verdictReason,
         outcome: candidate.outcome,
         reasons: candidate.reasonsJson ? summarizeReasons(candidate.reasonsJson) : "Technical Setup",
-        skipDuplicateCheck: sendWithoutDuplicateCheck
+        skipDuplicateCheck: forceSend ? true : sendWithoutDuplicateCheck,
+        forceSend
       });
+
+      const nowTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      setRecentNotifiedCandidates((prev) => ({
+        ...prev,
+        [candidate.symbol]: {
+          time: nowTime,
+          status: res.success ? "success" : res.isDuplicate ? "duplicate" : "error",
+          channel: res.results?.filter((r) => r.isSuccess).map((r) => r.channel).join(", "),
+          message: res.message
+        }
+      }));
 
       setNotificationStatusBanner({
         success: res.success,
-        message: res.message
+        message: res.message,
+        isDuplicate: Boolean(res.isDuplicate),
+        candidateSymbol: candidate.symbol,
+        onForceResend: () => void handleSendCandidateNotification(candidate, true)
       });
 
       void loadDashboard();
@@ -1124,7 +1159,7 @@ function App() {
     }
   }
 
-  async function handleBroadcastStageResults(stage: string, items: any[]) {
+  async function handleBroadcastStageResults(stage: string, items: any[], forceSend: boolean = false) {
     setBroadcastingStage(stage);
     try {
       const res = await postJson<{
@@ -1136,12 +1171,15 @@ function App() {
       }>("/notifications/broadcast-stage-results", {
         stage,
         items,
-        skipDuplicateCheck: sendWithoutDuplicateCheck
+        skipDuplicateCheck: forceSend ? true : sendWithoutDuplicateCheck,
+        forceSend
       });
 
       setNotificationStatusBanner({
         success: res.success,
-        message: res.message
+        message: res.message,
+        isDuplicate: Boolean(res.isDuplicate),
+        onForceResend: () => void handleBroadcastStageResults(stage, items, true)
       });
 
       void loadDashboard();
@@ -1525,7 +1563,7 @@ function App() {
                   </span>
                 )}
               </div>
-              {isSettingsAdmin && (
+              {canSendNotifications && (
                 <button
                   type="button"
                   className="btn-broadcast-results"
@@ -1539,8 +1577,63 @@ function App() {
               )}
             </div>
 
+            {notificationStatusBanner && (
+              <div
+                className={`notification-banner ${notificationStatusBanner.success ? "success" : notificationStatusBanner.isDuplicate ? "warning" : "error"}`}
+                style={{ marginBottom: 12 }}
+              >
+                <span className="banner-icon">
+                  {notificationStatusBanner.success ? "✅" : notificationStatusBanner.isDuplicate ? "⚡" : "⚠️"}
+                </span>
+                <span className="banner-text">
+                  {notificationStatusBanner.message}
+                  {notificationStatusBanner.isDuplicate && notificationStatusBanner.onForceResend && (
+                    <button
+                      type="button"
+                      onClick={notificationStatusBanner.onForceResend}
+                      style={{
+                        marginLeft: 8,
+                        padding: "2px 8px",
+                        background: "#ea580c",
+                        color: "#fff",
+                        border: "none",
+                        borderRadius: 4,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        fontSize: 11
+                      }}
+                      title="Bypass duplicate suppression and send immediately"
+                    >
+                      ⚡ Force Send Now
+                    </button>
+                  )}
+                  {notificationStatusBanner.success && (
+                    <button
+                      type="button"
+                      onClick={() => setIsEmailViewerOpen(true)}
+                      style={{
+                        marginLeft: 8,
+                        padding: "2px 8px",
+                        background: "#0284c7",
+                        color: "#fff",
+                        border: "none",
+                        borderRadius: 4,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        fontSize: 11
+                      }}
+                      title="Inspect rendered notification in In-App Email Inbox"
+                    >
+                      📬 View in Inbox
+                    </button>
+                  )}
+                </span>
+                <button type="button" className="banner-close" onClick={() => setNotificationStatusBanner(null)}>&times;</button>
+              </div>
+            )}
+
             <DataTable
-              columns={isSettingsAdmin
+              columns={canSendNotifications
                 ? ["Symbol", "Direction", "Outcome", "Score", "Verdict", "Reasons", "Action"]
                 : ["Symbol", "Direction", "Outcome", "Score", "Verdict", "Reasons"]
               }
@@ -1554,28 +1647,56 @@ function App() {
                   summarizeReasons(item.reasonsJson)
                 ];
 
-                if (isSettingsAdmin) {
+                if (canSendNotifications) {
+                  const recentStatus = recentNotifiedCandidates[item.symbol];
+                  const isNotifying = notifyingCandidateSymbol === item.symbol;
+
                   baseRow.push(
-                    <button
-                      type="button"
-                      className="btn-notify-row"
-                      disabled={notifyingCandidateSymbol === item.symbol}
-                      onClick={() => void handleSendCandidateNotification({
-                        symbol: item.symbol,
-                        exchange: item.exchange,
-                        direction: item.direction,
-                        score: item.score,
-                        finalVerdict: item.finalVerdict,
-                        verdictReason: item.verdictReason,
-                        reasonsJson: item.reasonsJson,
-                        outcome: item.outcome,
-                        stage: "EOD Candidate"
-                      })}
-                      title={`Send notification for ${item.symbol} (${sendWithoutDuplicateCheck ? "Duplicate check bypassed" : "Duplicate check active"})`}
-                    >
-                      <Bell style={{ width: 11, height: 11 }} />
-                      <span>{notifyingCandidateSymbol === item.symbol ? "Sending..." : "Notify"}</span>
-                    </button>
+                    <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      {recentStatus?.status === "success" && (
+                        <span
+                          className="badge-notified-success"
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 700,
+                            padding: "2px 6px",
+                            borderRadius: 4,
+                            background: "#dcfce7",
+                            color: "#15803d",
+                            border: "1px solid #bbf7d0"
+                          }}
+                          title={`Notification sent at ${recentStatus.time} via ${recentStatus.channel || "configured channel"}`}
+                        >
+                          ✓ Sent
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        className="btn-notify-row"
+                        disabled={isNotifying}
+                        onClick={() => void handleSendCandidateNotification({
+                          symbol: item.symbol,
+                          exchange: item.exchange,
+                          direction: item.direction,
+                          score: item.score,
+                          entryPrice: item.entryPrice,
+                          stopPrice: item.stopPrice,
+                          targetPrice: item.targetPrice,
+                          finalVerdict: item.finalVerdict,
+                          verdictReason: item.verdictReason,
+                          reasonsJson: item.reasonsJson,
+                          outcome: item.outcome,
+                          stage: "EOD Candidate"
+                        }, Boolean(recentStatus?.status === "success" || sendWithoutDuplicateCheck))}
+                        title={recentStatus?.status === "success"
+                          ? `Resend notification immediately for ${item.symbol}`
+                          : `Send notification for ${item.symbol} (${sendWithoutDuplicateCheck ? "Duplicate check bypassed" : "Duplicate check active"})`
+                        }
+                      >
+                        <Bell style={{ width: 11, height: 11 }} />
+                        <span>{isNotifying ? "Sending..." : recentStatus?.status === "success" ? "Resend" : "Notify"}</span>
+                      </button>
+                    </div>
                   );
                 }
 
@@ -1652,7 +1773,7 @@ function App() {
           <Panel
             title="Pre-market Decisions"
             action={
-              isSettingsAdmin && state.preMarketDecisions.length > 0 ? (
+              canSendNotifications && state.preMarketDecisions.length > 0 ? (
                 <button
                   type="button"
                   className="btn-broadcast-results"
@@ -1671,7 +1792,7 @@ function App() {
             <StageDecisionTable
               decisions={state.preMarketDecisions}
               emptyText="No pre-market decisions found for latest run."
-              isSettingsAdmin={isSettingsAdmin}
+              canNotify={canSendNotifications}
               notifyingSymbol={notifyingCandidateSymbol}
               onNotify={(item) => void handleSendCandidateNotification({
                 symbol: item.symbol,
@@ -1691,7 +1812,7 @@ function App() {
           <Panel
             title="Opening-range Decisions"
             action={
-              isSettingsAdmin && state.openingDecisions.length > 0 ? (
+              canSendNotifications && state.openingDecisions.length > 0 ? (
                 <button
                   type="button"
                   className="btn-broadcast-results"
@@ -1710,7 +1831,7 @@ function App() {
             <StageDecisionTable
               decisions={state.openingDecisions}
               emptyText="No opening-range decisions found for latest run."
-              isSettingsAdmin={isSettingsAdmin}
+              canNotify={canSendNotifications}
               notifyingSymbol={notifyingCandidateSymbol}
               onNotify={(item) => void handleSendCandidateNotification({
                 symbol: item.symbol,
@@ -1732,7 +1853,7 @@ function App() {
           <Panel
             title="Live-validation Decisions"
             action={
-              isSettingsAdmin && state.liveDecisions.length > 0 ? (
+              canSendNotifications && state.liveDecisions.length > 0 ? (
                 <button
                   type="button"
                   className="btn-broadcast-results"
@@ -1751,7 +1872,7 @@ function App() {
             <StageDecisionTable
               decisions={state.liveDecisions}
               emptyText="No live-validation decisions found for latest run."
-              isSettingsAdmin={isSettingsAdmin}
+              canNotify={canSendNotifications}
               notifyingSymbol={notifyingCandidateSymbol}
               onNotify={(item) => void handleSendCandidateNotification({
                 symbol: item.symbol,
@@ -5167,16 +5288,19 @@ function StageDecisionTable({
   decisions,
   emptyText,
   isSettingsAdmin,
+  canNotify,
   onNotify,
   notifyingSymbol
 }: {
   decisions: StageDecision[];
   emptyText: string;
   isSettingsAdmin?: boolean;
+  canNotify?: boolean;
   onNotify?: (decision: StageDecision) => void;
   notifyingSymbol?: string | null;
 }) {
-  const columns = isSettingsAdmin && onNotify
+  const allowNotify = Boolean((canNotify ?? isSettingsAdmin) && onNotify);
+  const columns = allowNotify
     ? ["Symbol", "Direction", "Outcome", "Score", "Entry", "Stop", "Target", "Qty", "Risk", "Reasons", "Action"]
     : ["Symbol", "Direction", "Outcome", "Score", "Entry", "Stop", "Target", "Qty", "Risk", "Reasons"];
 
@@ -5197,7 +5321,7 @@ function StageDecisionTable({
           summarizeReasons(item.reasonsJson)
         ];
 
-        if (isSettingsAdmin && onNotify) {
+        if (allowNotify && onNotify) {
           baseRow.push(
             <button
               type="button"
