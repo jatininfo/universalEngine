@@ -209,7 +209,98 @@ interface EventLogEntry {
   createdAtUtc: string;
 }
 
-// Master instruments pool
+// Comprehensive realistic reference prices for Indian equities (NSE/BSE)
+export const REAL_STOCK_PRICES: Record<string, number> = {
+  // Mega & Large Caps (Current NSE Real-World Prices)
+  RELIANCE: 1167.70,
+  TCS: 2075.00,
+  HDFCBANK: 1712.00,
+  ICICIBANK: 1289.00,
+  INFY: 1035.00,
+  SBIN: 814.20,
+  BHARTIARTL: 1741.10,
+  ITC: 255.90,
+  LT: 3693.40,
+  AXISBANK: 1217.10,
+  KOTAKBANK: 418.35,
+  TATAMOTORS: 654.00,
+  WIPRO: 159.00,
+  MARUTI: 11386.00,
+  SUNPHARMA: 1801.00,
+  TITAN: 4515.70,
+  BAJFINANCE: 948.30,
+  HCLTECH: 1243.10,
+  NTPC: 315.10,
+  POWERGRID: 254.55,
+  "BAJAJ-AUTO": 10045.00,
+  "M&M": 2860.00,
+  TECHM: 1535.00,
+  ASIANPAINT: 2406.25,
+  ULTRACEMCO: 10710.00,
+  NESTLEIND: 1309.10,
+  COALINDIA: 420.40,
+  TATASTEEL: 178.00,
+  JSWSTEEL: 1233.00,
+  HINDUNILVR: 1836.00,
+  ADANIENT: 2816.80,
+  ADANIPORTS: 1737.80,
+  GRASIM: 2962.00,
+  LTIM: 4007.00,
+  EICHERMOT: 6920.00,
+  HEROMOTOCO: 5168.00,
+  DIVISLAB: 9249.00,
+  DRREDDY: 1200.10,
+  CIPLA: 1343.20,
+  APOLLOHOSP: 8052.50,
+  INDUSINDBK: 880.00,
+  BANKBARODA: 230.80,
+  PNB: 109.60,
+  CANBK: 118.40,
+  SHREECEM: 21900.00,
+  PIDILITIND: 1470.00,
+  SIEMENS: 3804.00,
+  ABB: 6900.00,
+  BHEL: 421.00,
+  BEL: 383.10,
+  HAL: 4601.00,
+  TRENT: 2580.00,
+  ZOMATO: 313.90,
+  JIOFIN: 212.50,
+  IRCTC: 454.10,
+  DLF: 658.40,
+  VBL: 425.30,
+  MRF: 123715.00,
+  BOSCHLTD: 45480.00,
+  PAGEIND: 36660.00
+};
+
+export function getRealisticStockPrice(symbol?: string): number {
+  if (!symbol) return 1000;
+  const sym = symbol.toUpperCase().trim();
+  if (REAL_STOCK_PRICES[sym]) {
+    return REAL_STOCK_PRICES[sym];
+  }
+  const found = state?.instruments?.find((i) => i.symbol.toUpperCase() === sym);
+  if (found?.lastPrice && found.lastPrice > 0) {
+    return found.lastPrice;
+  }
+  const masterFound = MASTER_INSTRUMENTS?.find((i) => i.symbol.toUpperCase() === sym);
+  if (masterFound?.lastPrice && masterFound.lastPrice > 0) {
+    return masterFound.lastPrice;
+  }
+  let hash = 0;
+  for (let i = 0; i < sym.length; i++) {
+    hash = (hash << 5) - hash + sym.charCodeAt(i);
+    hash |= 0;
+  }
+  const positiveHash = Math.abs(hash);
+  const brackets = [185, 340, 520, 830, 1240, 1680, 2450, 3600, 5200];
+  const base = brackets[positiveHash % brackets.length];
+  const offset = (positiveHash % 60) - 30;
+  return Math.max(10, base + offset);
+}
+
+// Master instruments pool with authentic NSE market prices
 const MASTER_INSTRUMENTS: Array<{
   symbol: string;
   exchange: string;
@@ -217,27 +308,68 @@ const MASTER_INSTRUMENTS: Array<{
   displayName: string;
   symbolName: string;
   isin: string;
+  lastPrice: number;
 }> = [
-  { symbol: "RELIANCE", exchange: "NSE", securityId: "2885", displayName: "Reliance Industries Ltd", symbolName: "Reliance Industries", isin: "INE002A01018" },
-  { symbol: "TCS", exchange: "NSE", securityId: "11536", displayName: "Tata Consultancy Services Ltd", symbolName: "TCS", isin: "INE467B01029" },
-  { symbol: "HDFCBANK", exchange: "NSE", securityId: "1333", displayName: "HDFC Bank Ltd", symbolName: "HDFC Bank", isin: "INE040A01034" },
-  { symbol: "ICICIBANK", exchange: "NSE", securityId: "4963", displayName: "ICICI Bank Ltd", symbolName: "ICICI Bank", isin: "INE090A01021" },
-  { symbol: "INFY", exchange: "NSE", securityId: "1594", displayName: "Infosys Ltd", symbolName: "Infosys", isin: "INE009A01021" },
-  { symbol: "SBIN", exchange: "NSE", securityId: "3045", displayName: "State Bank of India", symbolName: "SBI", isin: "INE062A01020" },
-  { symbol: "BHARTIARTL", exchange: "NSE", securityId: "10604", displayName: "Bharti Airtel Ltd", symbolName: "Bharti Airtel", isin: "INE397D01024" },
-  { symbol: "ITC", exchange: "NSE", securityId: "1660", displayName: "ITC Ltd", symbolName: "ITC", isin: "INE154A01025" },
-  { symbol: "LT", exchange: "NSE", securityId: "11483", displayName: "Larsen & Toubro Ltd", symbolName: "L&T", isin: "INE018A01030" },
-  { symbol: "AXISBANK", exchange: "NSE", securityId: "5900", displayName: "Axis Bank Ltd", symbolName: "Axis Bank", isin: "INE238A01034" },
-  { symbol: "KOTAKBANK", exchange: "NSE", securityId: "1922", displayName: "Kotak Mahindra Bank Ltd", symbolName: "Kotak Bank", isin: "INE237A01028" },
-  { symbol: "TATAMOTORS", exchange: "NSE", securityId: "3456", displayName: "Tata Motors Ltd", symbolName: "Tata Motors", isin: "INE155A01022" },
-  { symbol: "WIPRO", exchange: "NSE", securityId: "3787", displayName: "Wipro Ltd", symbolName: "Wipro", isin: "INE075A01022" },
-  { symbol: "MARUTI", exchange: "NSE", securityId: "10999", displayName: "Maruti Suzuki India Ltd", symbolName: "Maruti Suzuki", isin: "INE585B01010" },
-  { symbol: "SUNPHARMA", exchange: "NSE", securityId: "3351", displayName: "Sun Pharmaceutical Industries Ltd", symbolName: "Sun Pharma", isin: "INE044A01036" },
-  { symbol: "TITAN", exchange: "NSE", securityId: "3506", displayName: "Titan Company Ltd", symbolName: "Titan", isin: "INE280A01028" },
-  { symbol: "BAJFINANCE", exchange: "NSE", securityId: "317", displayName: "Bajaj Finance Ltd", symbolName: "Bajaj Finance", isin: "INE296A01024" },
-  { symbol: "HCLTECH", exchange: "NSE", securityId: "7229", displayName: "HCL Technologies Ltd", symbolName: "HCL Tech", isin: "INE860A01027" },
-  { symbol: "NTPC", exchange: "NSE", securityId: "11630", displayName: "NTPC Ltd", symbolName: "NTPC", isin: "INE733E01010" },
-  { symbol: "POWERGRID", exchange: "NSE", securityId: "14977", displayName: "Power Grid Corporation of India Ltd", symbolName: "Power Grid", isin: "INE752E01010" }
+  { symbol: "RELIANCE", exchange: "NSE", securityId: "2885", displayName: "Reliance Industries Ltd", symbolName: "Reliance Industries", isin: "INE002A01018", lastPrice: 1167.70 },
+  { symbol: "TCS", exchange: "NSE", securityId: "11536", displayName: "Tata Consultancy Services Ltd", symbolName: "TCS", isin: "INE467B01029", lastPrice: 2075.00 },
+  { symbol: "HDFCBANK", exchange: "NSE", securityId: "1333", displayName: "HDFC Bank Ltd", symbolName: "HDFC Bank", isin: "INE040A01034", lastPrice: 1712.00 },
+  { symbol: "ICICIBANK", exchange: "NSE", securityId: "4963", displayName: "ICICI Bank Ltd", symbolName: "ICICI Bank", isin: "INE090A01021", lastPrice: 1289.00 },
+  { symbol: "INFY", exchange: "NSE", securityId: "1594", displayName: "Infosys Ltd", symbolName: "Infosys", isin: "INE009A01021", lastPrice: 1035.00 },
+  { symbol: "SBIN", exchange: "NSE", securityId: "3045", displayName: "State Bank of India", symbolName: "SBI", isin: "INE062A01020", lastPrice: 814.20 },
+  { symbol: "BHARTIARTL", exchange: "NSE", securityId: "10604", displayName: "Bharti Airtel Ltd", symbolName: "Bharti Airtel", isin: "INE397D01024", lastPrice: 1741.10 },
+  { symbol: "ITC", exchange: "NSE", securityId: "1660", displayName: "ITC Ltd", symbolName: "ITC", isin: "INE154A01025", lastPrice: 255.90 },
+  { symbol: "LT", exchange: "NSE", securityId: "11483", displayName: "Larsen & Toubro Ltd", symbolName: "L&T", isin: "INE018A01030", lastPrice: 3693.40 },
+  { symbol: "AXISBANK", exchange: "NSE", securityId: "5900", displayName: "Axis Bank Ltd", symbolName: "Axis Bank", isin: "INE238A01034", lastPrice: 1217.10 },
+  { symbol: "KOTAKBANK", exchange: "NSE", securityId: "1922", displayName: "Kotak Mahindra Bank Ltd", symbolName: "Kotak Bank", isin: "INE237A01028", lastPrice: 418.35 },
+  { symbol: "TATAMOTORS", exchange: "NSE", securityId: "3456", displayName: "Tata Motors Ltd", symbolName: "Tata Motors", isin: "INE155A01022", lastPrice: 654.00 },
+  { symbol: "WIPRO", exchange: "NSE", securityId: "3787", displayName: "Wipro Ltd", symbolName: "Wipro", isin: "INE075A01022", lastPrice: 159.00 },
+  { symbol: "MARUTI", exchange: "NSE", securityId: "10999", displayName: "Maruti Suzuki India Ltd", symbolName: "Maruti Suzuki", isin: "INE585B01010", lastPrice: 11386.00 },
+  { symbol: "SUNPHARMA", exchange: "NSE", securityId: "3351", displayName: "Sun Pharmaceutical Industries Ltd", symbolName: "Sun Pharma", isin: "INE044A01036", lastPrice: 1801.00 },
+  { symbol: "TITAN", exchange: "NSE", securityId: "3506", displayName: "Titan Company Ltd", symbolName: "Titan", isin: "INE280A01028", lastPrice: 4515.70 },
+  { symbol: "BAJFINANCE", exchange: "NSE", securityId: "317", displayName: "Bajaj Finance Ltd", symbolName: "Bajaj Finance", isin: "INE296A01024", lastPrice: 948.30 },
+  { symbol: "HCLTECH", exchange: "NSE", securityId: "7229", displayName: "HCL Technologies Ltd", symbolName: "HCL Tech", isin: "INE860A01027", lastPrice: 1243.10 },
+  { symbol: "NTPC", exchange: "NSE", securityId: "11630", displayName: "NTPC Ltd", symbolName: "NTPC", isin: "INE733E01010", lastPrice: 315.10 },
+  { symbol: "POWERGRID", exchange: "NSE", securityId: "14977", displayName: "Power Grid Corporation of India Ltd", symbolName: "Power Grid", isin: "INE752E01010", lastPrice: 254.55 },
+  { symbol: "BAJAJ-AUTO", exchange: "NSE", securityId: "16669", displayName: "Bajaj Auto Ltd", symbolName: "Bajaj Auto", isin: "INE917I01012", lastPrice: 10045.00 },
+  { symbol: "M&M", exchange: "NSE", securityId: "2031", displayName: "Mahindra & Mahindra Ltd", symbolName: "M&M", isin: "INE101A01026", lastPrice: 2860.00 },
+  { symbol: "TECHM", exchange: "NSE", securityId: "13538", displayName: "Tech Mahindra Ltd", symbolName: "Tech Mahindra", isin: "INE669C01036", lastPrice: 1535.00 },
+  { symbol: "ASIANPAINT", exchange: "NSE", securityId: "236", displayName: "Asian Paints Ltd", symbolName: "Asian Paints", isin: "INE021A01026", lastPrice: 2406.25 },
+  { symbol: "ULTRACEMCO", exchange: "NSE", securityId: "11532", displayName: "UltraTech Cement Ltd", symbolName: "UltraTech Cement", isin: "INE481G01011", lastPrice: 10710.00 },
+  { symbol: "NESTLEIND", exchange: "NSE", securityId: "17963", displayName: "Nestle India Ltd", symbolName: "Nestle", isin: "INE239A01024", lastPrice: 1309.10 },
+  { symbol: "COALINDIA", exchange: "NSE", securityId: "20374", displayName: "Coal India Ltd", symbolName: "Coal India", isin: "INE522F01014", lastPrice: 420.40 },
+  { symbol: "TATASTEEL", exchange: "NSE", securityId: "3499", displayName: "Tata Steel Ltd", symbolName: "Tata Steel", isin: "INE081A01020", lastPrice: 178.00 },
+  { symbol: "JSWSTEEL", exchange: "NSE", securityId: "11723", displayName: "JSW Steel Ltd", symbolName: "JSW Steel", isin: "INE019A01038", lastPrice: 1233.00 },
+  { symbol: "HINDUNILVR", exchange: "NSE", securityId: "1394", displayName: "Hindustan Unilever Ltd", symbolName: "Hindustan Unilever", isin: "INE030A01027", lastPrice: 1836.00 },
+  { symbol: "ADANIENT", exchange: "NSE", securityId: "25", displayName: "Adani Enterprises Ltd", symbolName: "Adani Ent", isin: "INE423A01024", lastPrice: 2816.80 },
+  { symbol: "ADANIPORTS", exchange: "NSE", securityId: "15083", displayName: "Adani Ports & SEZ Ltd", symbolName: "Adani Ports", isin: "INE742F01042", lastPrice: 1737.80 },
+  { symbol: "GRASIM", exchange: "NSE", securityId: "1232", displayName: "Grasim Industries Ltd", symbolName: "Grasim", isin: "INE047A01021", lastPrice: 2962.00 },
+  { symbol: "LTIM", exchange: "NSE", securityId: "17818", displayName: "LTIMindtree Ltd", symbolName: "LTIMindtree", isin: "INE214T01019", lastPrice: 4007.00 },
+  { symbol: "EICHERMOT", exchange: "NSE", securityId: "910", displayName: "Eicher Motors Ltd", symbolName: "Eicher Motors", isin: "INE066A01021", lastPrice: 6920.00 },
+  { symbol: "HEROMOTOCO", exchange: "NSE", securityId: "1348", displayName: "Hero MotoCorp Ltd", symbolName: "Hero MotoCorp", isin: "INE158A01026", lastPrice: 5168.00 },
+  { symbol: "DIVISLAB", exchange: "NSE", securityId: "10940", displayName: "Divi's Laboratories Ltd", symbolName: "Divi's Lab", isin: "INE361B01024", lastPrice: 9249.00 },
+  { symbol: "DRREDDY", exchange: "NSE", securityId: "881", displayName: "Dr. Reddy's Laboratories Ltd", symbolName: "Dr Reddy", isin: "INE089A01023", lastPrice: 1200.10 },
+  { symbol: "CIPLA", exchange: "NSE", securityId: "694", displayName: "Cipla Ltd", symbolName: "Cipla", isin: "INE059A01026", lastPrice: 1343.20 },
+  { symbol: "APOLLOHOSP", exchange: "NSE", securityId: "157", displayName: "Apollo Hospitals Enterprise Ltd", symbolName: "Apollo Hosp", isin: "INE437A01024", lastPrice: 8052.50 },
+  { symbol: "INDUSINDBK", exchange: "NSE", securityId: "5258", displayName: "IndusInd Bank Ltd", symbolName: "IndusInd Bank", isin: "INE095A01012", lastPrice: 880.00 },
+  { symbol: "BANKBARODA", exchange: "NSE", securityId: "4668", displayName: "Bank of Baroda", symbolName: "Bank of Baroda", isin: "INE028A01039", lastPrice: 230.80 },
+  { symbol: "PNB", exchange: "NSE", securityId: "10666", displayName: "Punjab National Bank", symbolName: "PNB", isin: "INE160A01022", lastPrice: 109.60 },
+  { symbol: "CANBK", exchange: "NSE", securityId: "10599", displayName: "Canara Bank", symbolName: "Canara Bank", isin: "INE476A01014", lastPrice: 118.40 },
+  { symbol: "SHREECEM", exchange: "NSE", securityId: "3103", displayName: "Shree Cement Ltd", symbolName: "Shree Cement", isin: "INE070A01015", lastPrice: 21900.00 },
+  { symbol: "PIDILITIND", exchange: "NSE", securityId: "2664", displayName: "Pidilite Industries Ltd", symbolName: "Pidilite", isin: "INE318A01026", lastPrice: 1470.00 },
+  { symbol: "SIEMENS", exchange: "NSE", securityId: "3150", displayName: "Siemens Ltd", symbolName: "Siemens", isin: "INE003A01024", lastPrice: 3804.00 },
+  { symbol: "ABB", exchange: "NSE", securityId: "13", displayName: "ABB India Ltd", symbolName: "ABB", isin: "INE117A01022", lastPrice: 6900.00 },
+  { symbol: "BHEL", exchange: "NSE", securityId: "438", displayName: "Bharat Heavy Electricals Ltd", symbolName: "BHEL", isin: "INE257A01026", lastPrice: 421.00 },
+  { symbol: "BEL", exchange: "NSE", securityId: "383", displayName: "Bharat Electronics Ltd", symbolName: "BEL", isin: "INE263A01024", lastPrice: 383.10 },
+  { symbol: "HAL", exchange: "NSE", securityId: "2303", displayName: "Hindustan Aeronautics Ltd", symbolName: "HAL", isin: "INE066F01012", lastPrice: 4601.00 },
+  { symbol: "TRENT", exchange: "NSE", securityId: "1964", displayName: "Trent Ltd", symbolName: "Trent", isin: "INE849A01020", lastPrice: 2580.00 },
+  { symbol: "ZOMATO", exchange: "NSE", securityId: "5097", displayName: "Zomato Ltd", symbolName: "Zomato", isin: "INE758T01015", lastPrice: 313.90 },
+  { symbol: "JIOFIN", exchange: "NSE", securityId: "18143", displayName: "Jio Financial Services Ltd", symbolName: "Jio Financial", isin: "INE758E01017", lastPrice: 212.50 },
+  { symbol: "IRCTC", exchange: "NSE", securityId: "13611", displayName: "Indian Railway Catering & Tourism", symbolName: "IRCTC", isin: "INE335Y01012", lastPrice: 454.10 },
+  { symbol: "DLF", exchange: "NSE", securityId: "14732", displayName: "DLF Ltd", symbolName: "DLF", isin: "INE271C01023", lastPrice: 658.40 },
+  { symbol: "VBL", exchange: "NSE", securityId: "17939", displayName: "Varun Beverages Ltd", symbolName: "Varun Beverages", isin: "INE200M01013", lastPrice: 425.30 },
+  { symbol: "MRF", exchange: "NSE", securityId: "2277", displayName: "MRF Ltd", symbolName: "MRF", isin: "INE883A01011", lastPrice: 123715.00 },
+  { symbol: "BOSCHLTD", exchange: "NSE", securityId: "2181", displayName: "Bosch Ltd", symbolName: "Bosch", isin: "INE323A01026", lastPrice: 45480.00 },
+  { symbol: "PAGEIND", exchange: "NSE", securityId: "14418", displayName: "Page Industries Ltd", symbolName: "Page Industries", isin: "INE761H01022", lastPrice: 36660.00 }
 ];
 
 function toInstrumentKey(symbol: string, exchange: string) {
@@ -249,7 +381,8 @@ const initialInstruments: ScannerInstrument[] = MASTER_INSTRUMENTS.slice(0, 15).
   exchange: inst.exchange,
   securityId: inst.securityId,
   isin: inst.isin,
-  key: toInstrumentKey(inst.symbol, inst.exchange)
+  key: toInstrumentKey(inst.symbol, inst.exchange),
+  lastPrice: inst.lastPrice
 }));
 
 const initialBaskets: ScannerBasket[] = [
@@ -582,10 +715,10 @@ const state = {
   benchmarkIndices: [
     {
       symbol: "NIFTY 50",
-      price: 24850.50,
+      price: 22421.95,
       changePercent: 0.65,
       trend: "Bullish" as "Bullish",
-      vwap: 24790.00,
+      vwap: 22380.00,
       isAboveVwap: true,
       adxTrendStrength: 28.4,
       regime: "TrendingUp" as "TrendingUp",
@@ -593,10 +726,10 @@ const state = {
     },
     {
       symbol: "BANK NIFTY",
-      price: 52140.20,
+      price: 54450.75,
       changePercent: 0.82,
       trend: "Bullish" as "Bullish",
-      vwap: 51980.00,
+      vwap: 54310.00,
       isAboveVwap: true,
       adxTrendStrength: 31.2,
       regime: "TrendingUp" as "TrendingUp",
@@ -604,10 +737,10 @@ const state = {
     },
     {
       symbol: "NIFTY IT",
-      price: 41850.00,
+      price: 28304.70,
       changePercent: -0.15,
       trend: "Neutral" as "Neutral",
-      vwap: 41920.00,
+      vwap: 28390.00,
       isAboveVwap: false,
       adxTrendStrength: 18.5,
       regime: "RangeBoundChop" as "RangeBoundChop",
@@ -639,9 +772,9 @@ function seedInitialData() {
       outcome: "Accepted",
       direction: "Long",
       score: 88,
-      entryPrice: 2985.50,
-      stopPrice: 2940.00,
-      targetPrice: 3075.00,
+      entryPrice: 1167.70,
+      stopPrice: 1150.00,
+      targetPrice: 1202.00,
       finalVerdict: "Accepted",
       verdictReason: "Breakout above 20 EMA with 2.4x volume surge and bullish MACD",
       reasonsJson: JSON.stringify([
@@ -657,9 +790,9 @@ function seedInitialData() {
       outcome: "Accepted",
       direction: "Long",
       score: 84,
-      entryPrice: 1225.00,
-      stopPrice: 1205.00,
-      targetPrice: 1265.00,
+      entryPrice: 1289.00,
+      stopPrice: 1269.00,
+      targetPrice: 1329.00,
       finalVerdict: "Accepted",
       verdictReason: "Multi-week resistance breakout on high delivery volume",
       reasonsJson: JSON.stringify([
@@ -674,9 +807,9 @@ function seedInitialData() {
       outcome: "Accepted",
       direction: "Long",
       score: 79,
-      entryPrice: 4210.00,
-      stopPrice: 4150.00,
-      targetPrice: 4330.00,
+      entryPrice: 2075.00,
+      stopPrice: 2043.00,
+      targetPrice: 2139.00,
       finalVerdict: "Accepted",
       verdictReason: "Cup-and-handle neckline test with positive sector momentum",
       reasonsJson: JSON.stringify([{ code: "SupportBounce" }, { code: "VwapConfirmation" }])
@@ -687,9 +820,9 @@ function seedInitialData() {
       outcome: "Accepted",
       direction: "Short",
       score: 74,
-      entryPrice: 1890.00,
-      stopPrice: 1920.00,
-      targetPrice: 1830.00,
+      entryPrice: 1035.00,
+      stopPrice: 1051.00,
+      targetPrice: 1003.00,
       finalVerdict: "Accepted",
       verdictReason: "Rejection from 200 EMA with declining relative strength",
       reasonsJson: JSON.stringify([{ code: "EmaRejection" }, { code: "LowerHighs" }])
@@ -700,9 +833,9 @@ function seedInitialData() {
       outcome: "Rejected",
       direction: "Long",
       score: 22,
-      entryPrice: 965.00,
-      stopPrice: 945.00,
-      targetPrice: 1005.00,
+      entryPrice: 654.00,
+      stopPrice: 644.00,
+      targetPrice: 674.00,
       finalVerdict: "Rejected",
       verdictReason: "Sub-threshold trading volume and ADX trend weakness",
       reasonsJson: JSON.stringify([{ code: "LowVolume" }, { code: "BelowScoreThreshold" }])
@@ -725,12 +858,12 @@ function seedInitialData() {
       outcome: "Accepted",
       direction: "Long",
       score: 88,
-      entryPrice: 2985.5,
-      stopPrice: 2955.0,
-      targetPrice: 3045.0,
-      quantity: 33,
-      notionalAmount: 98521.5,
-      plannedRiskAmount: 1006.5,
+      entryPrice: 1167.70,
+      stopPrice: 1155.0,
+      targetPrice: 1192.0,
+      quantity: 78,
+      notionalAmount: 91080.6,
+      plannedRiskAmount: 990.6,
       reasonsJson: JSON.stringify([{ code: "HealthyGapUp" }, { code: "OrderBookBidDepth" }])
     },
     {
@@ -739,11 +872,11 @@ function seedInitialData() {
       outcome: "Accepted",
       direction: "Long",
       score: 84,
-      entryPrice: 1220.0,
-      stopPrice: 1205.0,
-      targetPrice: 1250.0,
+      entryPrice: 1285.0,
+      stopPrice: 1270.0,
+      targetPrice: 1315.0,
       quantity: 66,
-      notionalAmount: 80520.0,
+      notionalAmount: 84810.0,
       plannedRiskAmount: 990.0,
       reasonsJson: JSON.stringify([{ code: "PositivePreOpenTick" }, { code: "SectorTailwind" }])
     },
@@ -775,15 +908,15 @@ function seedInitialData() {
       outcome: "Accepted",
       direction: "Long",
       score: 91,
-      entryPrice: 2990.0,
-      stopPrice: 2960.0,
-      targetPrice: 3050.0,
-      target2Price: 3080.0,
-      quantity: 33,
-      notionalAmount: 98670.0,
-      plannedRiskAmount: 990.0,
+      entryPrice: 1170.0,
+      stopPrice: 1156.0,
+      targetPrice: 1198.0,
+      target2Price: 1212.0,
+      quantity: 70,
+      notionalAmount: 81900.0,
+      plannedRiskAmount: 980.0,
       reasonsJson: JSON.stringify([{ code: "OrbBreakoutAboveHigh" }, { code: "RvolInstitutionalVolume" }]),
-      atr14: 30.0,
+      atr14: 14.0,
       breakoutRvol: 2.35,
       indexConfluence: {
         indexSymbol: "NIFTY 50",
@@ -800,15 +933,15 @@ function seedInitialData() {
       outcome: "Accepted",
       direction: "Long",
       score: 86,
-      entryPrice: 1224.0,
-      stopPrice: 1210.0,
-      targetPrice: 1252.0,
-      target2Price: 1266.0,
-      quantity: 71,
-      notionalAmount: 86904.0,
-      plannedRiskAmount: 994.0,
+      entryPrice: 1288.0,
+      stopPrice: 1273.0,
+      targetPrice: 1318.0,
+      target2Price: 1333.0,
+      quantity: 66,
+      notionalAmount: 85008.0,
+      plannedRiskAmount: 990.0,
       reasonsJson: JSON.stringify([{ code: "Orb15mCleanClose" }, { code: "BankNiftyAligned" }]),
-      atr14: 14.0,
+      atr14: 15.0,
       breakoutRvol: 1.82,
       indexConfluence: {
         indexSymbol: "BANK NIFTY",
@@ -851,15 +984,15 @@ function seedInitialData() {
         exchange: "NSE",
         direction: "Long",
         status: "TargetApproaching",
-        latestPrice: 3032.5,
-        reason: "Trailing stop moved to breakeven + 0.5R (3005.0)"
+        latestPrice: 1184.5,
+        reason: "Trailing stop moved to breakeven + 0.5R (1177.0)"
       },
       {
         symbol: "ICICIBANK",
         exchange: "NSE",
         direction: "Long",
         status: "ActiveInProfit",
-        latestPrice: 1238.2,
+        latestPrice: 1302.4,
         reason: "Target 1 hit partial profit taken, holding balance"
       }
     ]
@@ -867,13 +1000,13 @@ function seedInitialData() {
 
   // Seed Backtest
   const backtestTrades: BacktestTrade[] = [
-    { signalDate: "2026-09-02", exitDate: "2026-09-02", symbol: "RELIANCE", exchange: "NSE", direction: "Long", entryPrice: 2910, exitPrice: 2975, returnPercent: 2.23, outcome: "Win", score: 85 },
-    { signalDate: "2026-09-05", exitDate: "2026-09-05", symbol: "TCS", exchange: "NSE", direction: "Long", entryPrice: 4200, exitPrice: 4295, returnPercent: 2.26, outcome: "Win", score: 82 },
-    { signalDate: "2026-09-09", exitDate: "2026-09-09", symbol: "HDFCBANK", exchange: "NSE", direction: "Long", entryPrice: 1650, exitPrice: 1630, returnPercent: -1.21, outcome: "Loss", score: 71 },
-    { signalDate: "2026-09-12", exitDate: "2026-09-12", symbol: "INFY", exchange: "NSE", direction: "Short", entryPrice: 1840, exitPrice: 1795, returnPercent: 2.45, outcome: "Win", score: 78 },
+    { signalDate: "2026-09-02", exitDate: "2026-09-02", symbol: "RELIANCE", exchange: "NSE", direction: "Long", entryPrice: 1150, exitPrice: 1175.30, returnPercent: 2.20, outcome: "Win", score: 85 },
+    { signalDate: "2026-09-05", exitDate: "2026-09-05", symbol: "TCS", exchange: "NSE", direction: "Long", entryPrice: 2050, exitPrice: 2096.30, returnPercent: 2.26, outcome: "Win", score: 82 },
+    { signalDate: "2026-09-09", exitDate: "2026-09-09", symbol: "HDFCBANK", exchange: "NSE", direction: "Long", entryPrice: 1690, exitPrice: 1670, returnPercent: -1.18, outcome: "Loss", score: 71 },
+    { signalDate: "2026-09-12", exitDate: "2026-09-12", symbol: "INFY", exchange: "NSE", direction: "Short", entryPrice: 1040, exitPrice: 1014.50, returnPercent: 2.45, outcome: "Win", score: 78 },
     { signalDate: "2026-09-18", exitDate: "2026-09-18", symbol: "SBIN", exchange: "NSE", direction: "Long", entryPrice: 810, exitPrice: 832, returnPercent: 2.71, outcome: "Win", score: 89 },
     { signalDate: "2026-09-22", exitDate: "2026-09-22", symbol: "AXISBANK", exchange: "NSE", direction: "Long", entryPrice: 1205, exitPrice: 1195, returnPercent: -0.83, outcome: "Loss", score: 66 },
-    { signalDate: "2026-09-26", exitDate: "2026-09-26", symbol: "ICICIBANK", exchange: "NSE", direction: "Long", entryPrice: 1190, exitPrice: 1225, returnPercent: 2.94, outcome: "Win", score: 87 }
+    { signalDate: "2026-09-26", exitDate: "2026-09-26", symbol: "ICICIBANK", exchange: "NSE", direction: "Long", entryPrice: 1260, exitPrice: 1297, returnPercent: 2.94, outcome: "Win", score: 87 }
   ];
 
   state.backtestRuns.push({
@@ -899,36 +1032,36 @@ function seedInitialData() {
       symbol: "RELIANCE",
       exchange: "NSE",
       direction: "Long",
-      entryPrice: 2990.0,
-      stopPrice: 2960.0,
-      targetPrice: 3050.0,
-      quantity: 33,
-      notionalAmount: 98670.0,
-      plannedRiskAmount: 990.0,
+      entryPrice: 1170.0,
+      stopPrice: 1156.0,
+      targetPrice: 1198.0,
+      quantity: 70,
+      notionalAmount: 81900.0,
+      plannedRiskAmount: 980.0,
       status: "Open",
       sourceStage: "OpeningRange",
       sourceReason: "ORB Breakout Confirmed",
-      realizedPnl: 1402.5,
-      returnPercent: 1.42
+      realizedPnl: 1015.0,
+      returnPercent: 1.24
     },
     {
       sessionDate: today,
       symbol: "ICICIBANK",
       exchange: "NSE",
       direction: "Long",
-      entryPrice: 1224.0,
-      stopPrice: 1210.0,
-      targetPrice: 1252.0,
-      quantity: 71,
-      notionalAmount: 86904.0,
-      plannedRiskAmount: 994.0,
+      entryPrice: 1288.0,
+      stopPrice: 1273.0,
+      targetPrice: 1318.0,
+      quantity: 66,
+      notionalAmount: 85008.0,
+      plannedRiskAmount: 990.0,
       status: "Closed",
       sourceStage: "OpeningRange",
       sourceReason: "Target 1 Hit",
       exitDate: today,
-      exitPrice: 1252.0,
-      realizedPnl: 1988.0,
-      returnPercent: 2.29
+      exitPrice: 1318.0,
+      realizedPnl: 1980.0,
+      returnPercent: 2.33
     }
   ];
 
@@ -960,7 +1093,7 @@ function seedInitialData() {
         recommendation: "BUY_CANDIDATE",
         probabilityPercent: 78.5,
         confidence: "High",
-        rationale: "Multi-timeframe momentum alignment across 15m and Daily. Volume profile shows heavy institutional accumulation above 2980.",
+        rationale: "Multi-timeframe momentum alignment across 15m and Daily. Volume profile shows heavy institutional accumulation above 1160.",
         promptVersion: "v1.2-pro"
       },
       {
@@ -1130,16 +1263,16 @@ function seedInitialData() {
           <div style="padding: 20px;">
             <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
               <tr><td style="padding: 6px 0; color: #64748b;">Direction:</td><td style="padding: 6px 0; font-weight: bold; color: #16a34a;">LONG</td></tr>
-              <tr><td style="padding: 6px 0; color: #64748b;">Entry Price:</td><td style="padding: 6px 0; font-weight: bold;">₹2,950.00</td></tr>
-              <tr><td style="padding: 6px 0; color: #64748b;">Stop Loss:</td><td style="padding: 6px 0; font-weight: bold; color: #dc2626;">₹2,925.00</td></tr>
-              <tr><td style="padding: 6px 0; color: #64748b;">Target Price:</td><td style="padding: 6px 0; font-weight: bold; color: #16a34a;">₹3,000.00 (1:2 R:R)</td></tr>
-              <tr><td style="padding: 6px 0; color: #64748b;">Planned Risk:</td><td style="padding: 6px 0; font-weight: bold;">₹2,000.00 (Qty: 80 shares)</td></tr>
+              <tr><td style="padding: 6px 0; color: #64748b;">Entry Price:</td><td style="padding: 6px 0; font-weight: bold;">₹1,170.00</td></tr>
+              <tr><td style="padding: 6px 0; color: #64748b;">Stop Loss:</td><td style="padding: 6px 0; font-weight: bold; color: #dc2626;">₹1,156.00</td></tr>
+              <tr><td style="padding: 6px 0; color: #64748b;">Target Price:</td><td style="padding: 6px 0; font-weight: bold; color: #16a34a;">₹1,198.00 (1:2 R:R)</td></tr>
+              <tr><td style="padding: 6px 0; color: #64748b;">Planned Risk:</td><td style="padding: 6px 0; font-weight: bold;">₹980.00 (Qty: 70 shares)</td></tr>
               <tr><td style="padding: 6px 0; color: #64748b;">Breakout Reason:</td><td style="padding: 6px 0;">Surpassed opening 15-min high with 3.1x volume confirmation</td></tr>
             </table>
           </div>
         </div>
       `,
-      textMessage: "TRADE ALERT: RELIANCE (NSE) Long\nEntry: ₹2,950.00 | Stop: ₹2,925.00 | Target: ₹3,000.00 | Planned Risk: ₹2,000.00",
+      textMessage: "TRADE ALERT: RELIANCE (NSE) Long\nEntry: ₹1,170.00 | Stop: ₹1,156.00 | Target: ₹1,198.00 | Planned Risk: ₹980.00",
       isSuccess: true,
       attemptedAtUtc: new Date(Date.now() - 3600000 * 2).toISOString()
     }
@@ -1892,10 +2025,25 @@ async function startServer() {
 
   // Auth Helpers & Middleware
   function getAuthenticatedUser(req: Request): AppUser | null {
-    const headerEmail = (req.headers["x-user-email"] as string) || (req.query.userEmail as string);
-    if (headerEmail) {
-      const found = state.users.find((u) => u.email.toLowerCase() === headerEmail.toLowerCase());
-      if (found) return found;
+    const rawEmail = (req.headers["x-user-email"] as string) || (req.query.userEmail as string);
+    if (typeof rawEmail === "string") {
+      const email = rawEmail.trim().toLowerCase();
+      if (!email || email === "anonymous" || email === "null" || email === "undefined") {
+        return null;
+      }
+      const found = state.users.find((u) => u.email.toLowerCase() === email);
+      if (found) {
+        if (found.status === "Suspended") {
+          return null;
+        }
+        return found;
+      }
+      // An unrecognized or invalid user header must never fall back to currentUser or grant access
+      return null;
+    }
+    // If no header or query param was provided at all, fallback to state.currentUser
+    if (state.currentUser && state.currentUser.status === "Suspended") {
+      return null;
     }
     return state.currentUser;
   }
@@ -1904,6 +2052,7 @@ async function startServer() {
     const user = getAuthenticatedUser(req);
     const hasAdminClearance = Boolean(
       user &&
+      user.status === "Active" &&
       (isDesignatedSuperAdmin(user.email) ||
        user.role === "Super Admin" ||
        (user.role as string) === "Admin")
@@ -1911,9 +2060,10 @@ async function startServer() {
     if (!user || !hasAdminClearance) {
       return res.status(403).json({
         error: "Access Denied",
-        message: `Only users with an Admin or Super Admin role are authorized to access or modify application settings.`,
+        message: "Only users with an Admin or Super Admin role are authorized to manage scanner universe, baskets, instruments, or application settings.",
         authorizedEmails: SETTINGS_ADMIN_EMAILS,
-        currentEmail: user?.email || "anonymous"
+        currentEmail: user?.email || "anonymous",
+        currentRole: user?.role || "Unauthenticated"
       });
     }
     next();
@@ -1921,10 +2071,10 @@ async function startServer() {
 
   function requireNotificationAccess(req: Request, res: Response, next: () => void) {
     const user = getAuthenticatedUser(req);
-    if (!user) {
+    if (!user || user.status === "Suspended") {
       return res.status(401).json({
         error: "Unauthorized",
-        message: "Authentication required to dispatch notifications."
+        message: "Authentication required to dispatch notifications. Please sign in with an active account."
       });
     }
     next();
@@ -1932,16 +2082,22 @@ async function startServer() {
 
   // Auth & Session Routes
   app.get("/api/auth/session", (req: Request, res: Response) => {
+    const rawEmail = (req.headers["x-user-email"] as string) || (req.query.userEmail as string);
     const user = getAuthenticatedUser(req);
+    const existing = typeof rawEmail === "string" ? state.users.find((u) => u.email.toLowerCase() === rawEmail.trim().toLowerCase()) : null;
+    const isSuspended = existing?.status === "Suspended";
+
     const hasAdminAccess = Boolean(
       user &&
+      user.status === "Active" &&
       (isDesignatedSuperAdmin(user.email) ||
        user.role === "Super Admin" ||
        (user.role as string) === "Admin")
     );
     res.json({
-      user,
+      user: isSuspended ? existing : user,
       isAuthenticated: Boolean(user),
+      isSuspended: Boolean(isSuspended),
       settingsAdminEmail: SETTINGS_ADMIN_EMAILS[0],
       settingsAdminEmails: SETTINGS_ADMIN_EMAILS,
       hasSettingsAccess: hasAdminAccess,
@@ -1985,9 +2141,10 @@ async function startServer() {
     });
 
     const hasAdminAccess = Boolean(
-      target.email.toLowerCase() === SETTINGS_ADMIN_EMAIL.toLowerCase() ||
-      target.role === "Super Admin" ||
-      (target.role as string) === "Admin"
+      target.status === "Active" &&
+      (isDesignatedSuperAdmin(target.email) ||
+       target.role === "Super Admin" ||
+       (target.role as string) === "Admin")
     );
 
     res.json({
@@ -2037,9 +2194,10 @@ async function startServer() {
     });
 
     const hasAdminAccess = Boolean(
-      user.email.toLowerCase() === SETTINGS_ADMIN_EMAIL.toLowerCase() ||
-      user.role === "Super Admin" ||
-      (user.role as string) === "Admin"
+      user.status === "Active" &&
+      (isDesignatedSuperAdmin(user.email) ||
+       user.role === "Super Admin" ||
+       (user.role as string) === "Admin")
     );
 
     res.json({
@@ -2059,7 +2217,7 @@ async function startServer() {
     res.json(state.users);
   });
 
-  app.post("/api/auth/users", (req: Request, res: Response) => {
+  app.post("/api/auth/users", requireSettingsAdmin, (req: Request, res: Response) => {
     const { email, name, role, provider, status } = req.body || {};
     if (!email) {
       return res.status(400).json({ error: "Email is required to create a user." });
@@ -2094,7 +2252,7 @@ async function startServer() {
     res.status(201).json(newUser);
   });
 
-  app.put("/api/auth/users/:id", (req: Request, res: Response) => {
+  app.put("/api/auth/users/:id", requireSettingsAdmin, (req: Request, res: Response) => {
     const target = state.users.find((u) => u.id === req.params.id);
     if (!target) {
       return res.status(404).json({ error: "User not found." });
@@ -2128,7 +2286,7 @@ async function startServer() {
     res.json(target);
   });
 
-  app.delete("/api/auth/users/:id", (req: Request, res: Response) => {
+  app.delete("/api/auth/users/:id", requireSettingsAdmin, (req: Request, res: Response) => {
     const target = state.users.find((u) => u.id === req.params.id);
     if (!target) {
       return res.status(404).json({ error: "User not found." });
@@ -2341,17 +2499,19 @@ async function startServer() {
       const score = isAccepted ? 75 + Math.floor(Math.random() * 20) : 20 + Math.floor(Math.random() * 30);
       const direction = idx % 3 === 0 ? "Short" : "Long";
       const instrument = state.instruments.find((i) => i.symbol === symbol);
-      const basePrice = instrument?.lastPrice ?? (1000 + Math.floor(Math.random() * 1500));
+      const basePrice = instrument?.lastPrice ?? getRealisticStockPrice(symbol);
       const entryPrice = Math.round(basePrice * 100) / 100;
+      const stopDistance = Math.round(entryPrice * 0.015 * 100) / 100;
+      const targetDistance = Math.round(entryPrice * 0.03 * 100) / 100;
       const stopPrice = direction === "Long"
-        ? Math.round(basePrice * 0.985 * 100) / 100
-        : Math.round(basePrice * 1.015 * 100) / 100;
+        ? Math.round((entryPrice - stopDistance) * 100) / 100
+        : Math.round((entryPrice + stopDistance) * 100) / 100;
       const targetPrice = direction === "Long"
-        ? Math.round(basePrice * 1.03 * 100) / 100
-        : Math.round(basePrice * 0.97 * 100) / 100;
+        ? Math.round((entryPrice + targetDistance) * 100) / 100
+        : Math.round((entryPrice - targetDistance) * 100) / 100;
       return {
         symbol,
-        exchange: "NSE",
+        exchange: instrument?.exchange || "NSE",
         outcome: isAccepted ? "Accepted" : "Rejected",
         direction,
         score,
@@ -2454,21 +2614,41 @@ async function startServer() {
       : state.instruments.slice(0, 4)
     ).map((c, idx) => {
       const isAccepted = idx < 3;
-      const basePrice = 1000 + Math.floor(Math.random() * 2000);
+      const symbol = c.symbol;
+      const direction = (c as any).direction || "Long";
+      const refPrice = (c as any).entryPrice ?? getRealisticStockPrice(symbol);
+      const gapMultiplier = isAccepted
+        ? (direction === "Long" ? 1.004 : 0.996)
+        : (direction === "Long" ? 1.035 : 0.965);
+      const entryPrice = Math.round(refPrice * gapMultiplier * 100) / 100;
+      const stopDistance = Math.round(entryPrice * 0.015 * 100) / 100;
+      const targetDistance = Math.round(entryPrice * 0.03 * 100) / 100;
+      const stopPrice = direction === "Long"
+        ? Math.round((entryPrice - stopDistance) * 100) / 100
+        : Math.round((entryPrice + stopDistance) * 100) / 100;
+      const targetPrice = direction === "Long"
+        ? Math.round((entryPrice + targetDistance) * 100) / 100
+        : Math.round((entryPrice - targetDistance) * 100) / 100;
+
+      const plannedRiskAmount = state.settings.risk.minPlannedRiskAmount || 950;
+      const riskPerShare = Math.max(0.5, Math.abs(entryPrice - stopPrice));
+      const quantity = Math.max(1, Math.floor(plannedRiskAmount / riskPerShare));
+      const notionalAmount = Math.round(entryPrice * quantity * 100) / 100;
+
       return {
-        symbol: c.symbol,
-        exchange: "NSE",
+        symbol,
+        exchange: (c as any).exchange || "NSE",
         outcome: isAccepted ? "Accepted" : "Rejected",
-        direction: (c as any).direction || "Long",
+        direction,
         score: (c as any).score || 80,
-        entryPrice: basePrice,
-        stopPrice: basePrice * 0.985,
-        targetPrice: basePrice * 1.025,
-        quantity: Math.floor(100000 / basePrice),
-        notionalAmount: basePrice * Math.floor(100000 / basePrice),
-        plannedRiskAmount: 950,
+        entryPrice,
+        stopPrice,
+        targetPrice,
+        quantity,
+        notionalAmount,
+        plannedRiskAmount,
         riskRejectionReason: isAccepted ? undefined : "ExcessiveGap",
-        riskExplanation: isAccepted ? undefined : "Gap exceeded 3% maximum threshold",
+        riskExplanation: isAccepted ? undefined : "Pre-market indicated gap exceeded 3% maximum threshold",
         reasonsJson: JSON.stringify(isAccepted ? [{ code: "GapWithinTolerance" }] : [{ code: "WideGap" }])
       };
     });
@@ -2557,11 +2737,12 @@ async function startServer() {
 
     const decisions: StageDecision[] = (source.length > 0 ? source : state.instruments.slice(0, 3)).map(
       (item: any, idx) => {
+        const symbol = item.symbol;
         const direction = item.direction || "Long";
-        const entryPrice = item.entryPrice || (idx === 0 ? 2990 : idx === 1 ? 1224 : 1820);
+        const entryPrice = item.entryPrice ? Math.round(item.entryPrice * 100) / 100 : getRealisticStockPrice(symbol);
         
-        // 1. Dynamic ATR Volatility Computation (1.1% to 1.5% true range)
-        const atr14 = Number((entryPrice * (0.011 + (idx * 0.002))).toFixed(2));
+        // 1. Dynamic ATR Volatility Computation (1.1% to 1.5% true range of the stock)
+        const atr14 = Number((entryPrice * (0.012 + (idx * 0.002))).toFixed(2));
         
         // 2. Relative Volume (RVOL) computation
         const breakoutRvol = idx === 0 ? 2.35 : idx === 1 ? 1.82 : 1.18;
@@ -2803,24 +2984,40 @@ async function startServer() {
   app.post("/pipeline/monitor/run", async (req: Request, res: Response) => {
     const sessionDate = (req.query.sessionDate as string) || new Date().toISOString().slice(0, 10);
     const newRunId = `mon-run-${Date.now()}`;
-    const events: MonitorEvent[] = [
-      {
-        symbol: "RELIANCE",
-        exchange: "NSE",
-        direction: "Long",
-        status: "ActiveInProfit",
-        latestPrice: 3015.0,
-        reason: "Trailing stop advanced. Floating PnL +0.8%"
-      },
-      {
-        symbol: "ICICIBANK",
-        exchange: "NSE",
-        direction: "Long",
-        status: "TargetHit",
-        latestPrice: 1252.0,
-        reason: "Exit executed at target resistance"
-      }
-    ];
+    const activeOrbSignals = state.openingRangeRuns[0]?.decisions?.filter((d) => d.outcome === "Accepted") || [];
+    const events: MonitorEvent[] = activeOrbSignals.length > 0
+      ? activeOrbSignals.slice(0, 3).map((item, idx) => {
+          const entry = item.entryPrice || getRealisticStockPrice(item.symbol);
+          const isTarget = idx === 1;
+          const delta = isTarget ? entry * 0.024 : entry * 0.008;
+          const latestPrice = Math.round((item.direction === "Short" ? entry - delta : entry + delta) * 100) / 100;
+          return {
+            symbol: item.symbol,
+            exchange: item.exchange || "NSE",
+            direction: item.direction || "Long",
+            status: isTarget ? "TargetHit" : "ActiveInProfit",
+            latestPrice,
+            reason: isTarget ? "Exit executed at target resistance" : "Trailing stop advanced. Floating PnL +0.8%"
+          };
+        })
+      : [
+          {
+            symbol: "RELIANCE",
+            exchange: "NSE",
+            direction: "Long",
+            status: "ActiveInProfit",
+            latestPrice: 1184.5,
+            reason: "Trailing stop advanced. Floating PnL +0.8%"
+          },
+          {
+            symbol: "ICICIBANK",
+            exchange: "NSE",
+            direction: "Long",
+            status: "TargetHit",
+            latestPrice: 1302.4,
+            reason: "Exit executed at target resistance"
+          }
+        ];
 
     state.monitorRuns.unshift({
       id: newRunId,
@@ -2879,11 +3076,11 @@ ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml
     const newRunId = `bt-run-${Date.now()}`;
 
     const trades: BacktestTrade[] = [
-      { signalDate: "2026-09-02", exitDate: "2026-09-02", symbol: "RELIANCE", exchange: "NSE", direction: "Long", entryPrice: 2950, exitPrice: 3012, returnPercent: 2.1, outcome: "Win", score: 86 },
-      { signalDate: "2026-09-08", exitDate: "2026-09-08", symbol: "TCS", exchange: "NSE", direction: "Long", entryPrice: 4250, exitPrice: 4340, returnPercent: 2.12, outcome: "Win", score: 81 },
-      { signalDate: "2026-09-14", exitDate: "2026-09-14", symbol: "ICICIBANK", exchange: "NSE", direction: "Long", entryPrice: 1210, exitPrice: 1242, returnPercent: 2.64, outcome: "Win", score: 88 },
-      { signalDate: "2026-09-17", exitDate: "2026-09-17", symbol: "INFY", exchange: "NSE", direction: "Short", entryPrice: 1820, exitPrice: 1780, returnPercent: 2.2, outcome: "Win", score: 79 },
-      { signalDate: "2026-09-24", exitDate: "2026-09-24", symbol: "SBIN", exchange: "NSE", direction: "Long", entryPrice: 815, exitPrice: 805, returnPercent: -1.23, outcome: "Loss", score: 72 }
+      { signalDate: "2026-09-02", exitDate: "2026-09-02", symbol: "RELIANCE", exchange: "NSE", direction: "Long", entryPrice: 1150, exitPrice: 1174, returnPercent: 2.09, outcome: "Win", score: 86 },
+      { signalDate: "2026-09-08", exitDate: "2026-09-08", symbol: "TCS", exchange: "NSE", direction: "Long", entryPrice: 2050, exitPrice: 2093, returnPercent: 2.10, outcome: "Win", score: 81 },
+      { signalDate: "2026-09-14", exitDate: "2026-09-14", symbol: "ICICIBANK", exchange: "NSE", direction: "Long", entryPrice: 1265, exitPrice: 1298, returnPercent: 2.61, outcome: "Win", score: 88 },
+      { signalDate: "2026-09-17", exitDate: "2026-09-17", symbol: "INFY", exchange: "NSE", direction: "Short", entryPrice: 1040, exitPrice: 1017, returnPercent: 2.21, outcome: "Win", score: 79 },
+      { signalDate: "2026-09-24", exitDate: "2026-09-24", symbol: "SBIN", exchange: "NSE", direction: "Long", entryPrice: 812, exitPrice: 802, returnPercent: -1.23, outcome: "Loss", score: 72 }
     ];
 
     const wins = trades.filter((t) => t.outcome === "Win").length;
@@ -2981,23 +3178,37 @@ ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml
     const latestOrb = state.openingRangeRuns[0];
     const source = latestOrb ? latestOrb.decisions : [];
 
-    const orders: PaperOrder[] = (source.length > 0 ? source : state.instruments.slice(0, 2)).map((item: any) => ({
-      sessionDate,
-      symbol: item.symbol,
-      exchange: "NSE",
-      direction: item.direction || "Long",
-      entryPrice: item.entryPrice || 2500,
-      stopPrice: item.stopPrice || 2470,
-      targetPrice: item.targetPrice || 2560,
-      quantity: item.quantity || 40,
-      notionalAmount: item.notionalAmount || 100000,
-      plannedRiskAmount: item.plannedRiskAmount || 950,
-      status: "Open",
-      sourceStage: "OpeningRange",
-      sourceReason: "Automated stage execution",
-      realizedPnl: 0,
-      returnPercent: 0
-    }));
+    const orders: PaperOrder[] = (source.length > 0 ? source : state.instruments.slice(0, 2)).map((item: any) => {
+      const entryPrice = item.entryPrice ? Math.round(item.entryPrice * 100) / 100 : getRealisticStockPrice(item.symbol);
+      const stopPrice = item.stopPrice
+        ? Math.round(item.stopPrice * 100) / 100
+        : (item.direction === "Short" ? Math.round(entryPrice * 1.015 * 100) / 100 : Math.round(entryPrice * 0.985 * 100) / 100);
+      const targetPrice = item.targetPrice
+        ? Math.round(item.targetPrice * 100) / 100
+        : (item.direction === "Short" ? Math.round(entryPrice * 0.97 * 100) / 100 : Math.round(entryPrice * 1.03 * 100) / 100);
+      const plannedRiskAmount = item.plannedRiskAmount || state.settings.risk.minPlannedRiskAmount || 950;
+      const riskPerShare = Math.max(0.5, Math.abs(entryPrice - stopPrice));
+      const quantity = item.quantity || Math.max(1, Math.floor(plannedRiskAmount / riskPerShare));
+      const notionalAmount = Math.round(entryPrice * quantity * 100) / 100;
+
+      return {
+        sessionDate,
+        symbol: item.symbol,
+        exchange: item.exchange || "NSE",
+        direction: item.direction || "Long",
+        entryPrice,
+        stopPrice,
+        targetPrice,
+        quantity,
+        notionalAmount,
+        plannedRiskAmount,
+        status: "Open",
+        sourceStage: "OpeningRange",
+        sourceReason: "Automated stage execution",
+        realizedPnl: 0,
+        returnPercent: 0
+      };
+    });
 
     state.paperRuns.unshift({
       id: newRunId,
@@ -3053,10 +3264,14 @@ ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml
     for (const run of state.paperRuns) {
       for (const order of run.orders) {
         if (order.status === "Open") {
-          const delta = (Math.random() * 0.02 - 0.005) * order.entryPrice;
-          const currentPrice = order.entryPrice + delta;
-          order.realizedPnl = Number((delta * order.quantity).toFixed(2));
-          order.returnPercent = Number(((delta / order.entryPrice) * 100).toFixed(2));
+          const isShort = (order.direction || "").toUpperCase() === "SHORT";
+          // Realistic small price variation between -1.5% and +1.5%
+          const pctMove = (Math.random() * 0.03 - 0.015);
+          const currentPrice = Math.round(order.entryPrice * (1 + pctMove) * 100) / 100;
+          const pnlPerShare = isShort ? (order.entryPrice - currentPrice) : (currentPrice - order.entryPrice);
+          order.exitPrice = currentPrice;
+          order.realizedPnl = Number((pnlPerShare * order.quantity).toFixed(2));
+          order.returnPercent = Number(((pnlPerShare / order.entryPrice) * 100).toFixed(2));
           updatedCount++;
         }
       }
@@ -3160,20 +3375,20 @@ ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml
     res.json(state.sentEmails.slice(0, limit));
   });
 
-  app.delete("/notifications/emails/:id", (req: Request, res: Response) => {
+  app.delete("/notifications/emails/:id", requireNotificationAccess, (req: Request, res: Response) => {
     const rawId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const id = parseInt(rawId || "0", 10);
     state.sentEmails = state.sentEmails.filter((e) => e.id !== id);
     res.json({ success: true, message: `Email #${id} removed from In-App Inbox.` });
   });
 
-  app.post("/notifications/emails/clear", (_req: Request, res: Response) => {
+  app.post("/notifications/emails/clear", requireNotificationAccess, (_req: Request, res: Response) => {
     state.sentEmails = [];
     res.json({ success: true, message: "In-App Virtual Inbox cleared." });
   });
 
   // Test Notification Endpoint
-  app.post("/notifications/test", async (req: Request, res: Response) => {
+  app.post("/notifications/test", requireNotificationAccess, async (req: Request, res: Response) => {
     const channel = (req.query.channel as string) || (req.body?.channel as string) || state.settings.notifications.channel;
     const testContent = buildTestAlertContent(channel);
 
@@ -3313,7 +3528,7 @@ ${events.map(e => `• <b><code>${escapeHtml(e.symbol)}</code></b> (${escapeHtml
         if (candidates.length === 0) {
           // Fallback to top instruments if scanner has not run yet
           candidates = state.instruments.slice(0, 5).map((inst, idx) => {
-            const basePrice = inst.lastPrice ?? (1000 + idx * 250);
+            const basePrice = inst.lastPrice ?? getRealisticStockPrice(inst.symbol);
             return {
               symbol: inst.symbol,
               exchange: inst.exchange || "NSE",

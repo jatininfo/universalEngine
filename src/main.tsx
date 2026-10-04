@@ -250,6 +250,7 @@ type LookupResult = {
   displayName: string;
   symbolName?: string;
   isin?: string;
+  lastPrice?: number;
 };
 
 type ScannerInstrument = {
@@ -258,6 +259,7 @@ type ScannerInstrument = {
   isin?: string;
   securityId?: string;
   key: string;
+  lastPrice?: number;
 };
 
 type ScannerInstruments = {
@@ -300,6 +302,89 @@ type ScannerUniverseDraft = {
 };
 
 type RunUniverseMode = "universe" | "all" | "basket" | "instrument";
+
+// Comprehensive authentic reference prices for Indian equities (NSE/BSE)
+export const REAL_STOCK_PRICES: Record<string, number> = {
+  RELIANCE: 1167.70,
+  TCS: 2075.00,
+  HDFCBANK: 1712.00,
+  ICICIBANK: 1289.00,
+  INFY: 1035.00,
+  SBIN: 814.20,
+  BHARTIARTL: 1741.10,
+  ITC: 255.90,
+  LT: 3693.40,
+  AXISBANK: 1217.10,
+  KOTAKBANK: 418.35,
+  TATAMOTORS: 654.00,
+  WIPRO: 159.00,
+  MARUTI: 11386.00,
+  SUNPHARMA: 1801.00,
+  TITAN: 4515.70,
+  BAJFINANCE: 948.30,
+  HCLTECH: 1243.10,
+  NTPC: 315.10,
+  POWERGRID: 254.55,
+  "BAJAJ-AUTO": 10045.00,
+  "M&M": 2860.00,
+  TECHM: 1535.00,
+  ASIANPAINT: 2406.25,
+  ULTRACEMCO: 10710.00,
+  NESTLEIND: 1309.10,
+  COALINDIA: 420.40,
+  TATASTEEL: 178.00,
+  JSWSTEEL: 1233.00,
+  HINDUNILVR: 1836.00,
+  ADANIENT: 2816.80,
+  ADANIPORTS: 1737.80,
+  GRASIM: 2962.00,
+  LTIM: 4007.00,
+  EICHERMOT: 6920.00,
+  HEROMOTOCO: 5168.00,
+  DIVISLAB: 9249.00,
+  DRREDDY: 1200.10,
+  CIPLA: 1343.20,
+  APOLLOHOSP: 8052.50,
+  INDUSINDBK: 880.00,
+  BANKBARODA: 230.80,
+  PNB: 109.60,
+  CANBK: 118.40,
+  SHREECEM: 21900.00,
+  PIDILITIND: 1470.00,
+  SIEMENS: 3804.00,
+  ABB: 6900.00,
+  BHEL: 421.00,
+  BEL: 383.10,
+  HAL: 4601.00,
+  TRENT: 2580.00,
+  ZOMATO: 313.90,
+  JIOFIN: 212.50,
+  IRCTC: 454.10,
+  DLF: 658.40,
+  VBL: 425.30,
+  MRF: 123715.00,
+  BOSCHLTD: 45480.00,
+  PAGEIND: 36660.00
+};
+
+export function getStockReferencePrice(symbol?: string): number {
+  if (!symbol) return 1000;
+  const sym = symbol.toUpperCase().trim();
+  if (REAL_STOCK_PRICES[sym]) {
+    return REAL_STOCK_PRICES[sym];
+  }
+  let hash = 0;
+  for (let i = 0; i < sym.length; i++) {
+    hash = (hash << 5) - hash + sym.charCodeAt(i);
+    hash |= 0;
+  }
+  const positiveHash = Math.abs(hash);
+  const brackets = [185, 340, 520, 830, 1240, 1680, 2450, 3600, 5200];
+  const base = brackets[positiveHash % brackets.length];
+  const offset = (positiveHash % 60) - 30;
+  return Math.max(10, base + offset);
+}
+
 export type AppUser = {
   id: string;
   email: string;
@@ -652,25 +737,48 @@ function App() {
   } | null>(null);
 
   // Authentication & User Management State
-  const [currentUser, setCurrentUser] = React.useState<AppUser | null>({
-    id: "usr-admin-1",
-    email: "indurotech.jp@gmail.com",
-    name: "InduroTech Admin",
-    avatarUrl: "https://api.dicebear.com/7.x/bottts/svg?seed=indurotech",
-    provider: "google",
-    role: "Super Admin",
-    status: "Active",
-    createdAtUtc: "2026-09-01T00:00:00.000Z",
-    lastLoginAtUtc: new Date().toISOString()
+  const [currentUser, setCurrentUser] = React.useState<AppUser | null>(() => {
+    if (typeof window !== "undefined") {
+      const stored = window.localStorage.getItem("induro_active_user_email");
+      if (stored === "anonymous") return null;
+      if (stored && stored !== "indurotech.jp@gmail.com") {
+        return {
+          id: `usr-${stored}`,
+          email: stored,
+          name: stored.split("@")[0],
+          avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(stored)}`,
+          provider: "google",
+          role: (stored === "tejas.p.singh@gmail.com" ? "Super Admin" : "Trader") as AppUser["role"],
+          status: "Active",
+          createdAtUtc: "2026-09-01T00:00:00.000Z",
+          lastLoginAtUtc: new Date().toISOString()
+        };
+      }
+    }
+    return {
+      id: "usr-admin-1",
+      email: "indurotech.jp@gmail.com",
+      name: "InduroTech Admin",
+      avatarUrl: "https://api.dicebear.com/7.x/bottts/svg?seed=indurotech",
+      provider: "google",
+      role: "Super Admin",
+      status: "Active",
+      createdAtUtc: "2026-09-01T00:00:00.000Z",
+      lastLoginAtUtc: new Date().toISOString()
+    };
   });
-  const isSettingsAdmin = Boolean(
-    currentUser && (
+
+  const isAdmin = Boolean(
+    currentUser &&
+    currentUser.status !== "Suspended" && (
       currentUser.email.toLowerCase() === "indurotech.jp@gmail.com" ||
       currentUser.email.toLowerCase() === "tejas.p.singh@gmail.com" ||
       currentUser.role === "Super Admin" ||
       currentUser.role === "Admin"
     )
   );
+  const isSettingsAdmin = isAdmin;
+
   // All authenticated users have access to trigger candidate and stage notifications
   const canSendNotifications = Boolean(currentUser);
   const [users, setUsers] = React.useState<AppUser[]>([]);
@@ -722,6 +830,7 @@ function App() {
       await loadDashboard();
     } catch {
       setCurrentUser(null);
+      setActiveUserEmailHeader("anonymous");
     }
   };
 
@@ -731,6 +840,10 @@ function App() {
     provider: AppUser["provider"];
     role: AppUser["role"];
   }) => {
+    if (!isAdmin) {
+      setState((prev) => ({ ...prev, error: "Access Denied: Only administrators can create users." }));
+      return;
+    }
     try {
       const created = await postJson<AppUser>("/api/auth/users", newUser);
       setUsers((prev) => [...prev, created]);
@@ -742,6 +855,10 @@ function App() {
   };
 
   const handleUpdateRole = async (userId: string, role: AppUser["role"]) => {
+    if (!isAdmin) {
+      setState((prev) => ({ ...prev, error: "Access Denied: Only administrators can assign roles." }));
+      return;
+    }
     try {
       const updated = await putJson<AppUser>(`/api/auth/users/${userId}`, { role });
       setUsers((prev) => prev.map((u) => (u.id === userId ? updated : u)));
@@ -751,6 +868,10 @@ function App() {
   };
 
   const handleToggleStatus = async (userId: string) => {
+    if (!isAdmin) {
+      setState((prev) => ({ ...prev, error: "Access Denied: Only administrators can change user status." }));
+      return;
+    }
     const target = users.find((u) => u.id === userId);
     if (!target) return;
     const newStatus = target.status === "Active" ? "Suspended" : "Active";
@@ -763,6 +884,10 @@ function App() {
   };
 
   const handleDeleteUser = async (userId: string) => {
+    if (!isAdmin) {
+      setState((prev) => ({ ...prev, error: "Access Denied: Only administrators can delete users." }));
+      return;
+    }
     try {
       await deleteJson(`/api/auth/users/${userId}`);
       setUsers((prev) => prev.filter((u) => u.id !== userId));
@@ -812,10 +937,17 @@ function App() {
     setState((current) => ({ ...current, loading: true, error: null }));
     try {
       const isSettingsAdmin = Boolean(
-        activeUserEmailHeader.toLowerCase() === "indurotech.jp@gmail.com" ||
-        activeUserEmailHeader.toLowerCase() === "tejas.p.singh@gmail.com" ||
-        currentUser?.role === "Super Admin" ||
-        currentUser?.role === "Admin"
+        currentUser ? (
+          currentUser.status !== "Suspended" && (
+            currentUser.email.toLowerCase() === "indurotech.jp@gmail.com" ||
+            currentUser.email.toLowerCase() === "tejas.p.singh@gmail.com" ||
+            currentUser.role === "Super Admin" ||
+            currentUser.role === "Admin"
+          )
+        ) : (
+          activeUserEmailHeader.toLowerCase() === "indurotech.jp@gmail.com" ||
+          activeUserEmailHeader.toLowerCase() === "tejas.p.singh@gmail.com"
+        )
       );
 
       const [
@@ -871,8 +1003,8 @@ function App() {
       if (usersList && usersList.length > 0) {
         setUsers(usersList);
       }
-      if (sessionInfo?.user) {
-        setCurrentUser(sessionInfo.user);
+      if (sessionInfo) {
+        setCurrentUser(sessionInfo.user ?? null);
       }
       if (latestSentEmails) {
         setSentEmails(latestSentEmails);
@@ -967,10 +1099,13 @@ function App() {
 
   React.useEffect(() => {
     const hasAdminAccess = Boolean(
-      activeUserEmailHeader.toLowerCase() === "indurotech.jp@gmail.com" ||
-      activeUserEmailHeader.toLowerCase() === "tejas.p.singh@gmail.com" ||
-      currentUser?.role === "Super Admin" ||
-      currentUser?.role === "Admin"
+      currentUser &&
+      currentUser.status !== "Suspended" && (
+        currentUser.email.toLowerCase() === "indurotech.jp@gmail.com" ||
+        currentUser.email.toLowerCase() === "tejas.p.singh@gmail.com" ||
+        currentUser.role === "Super Admin" ||
+        currentUser.role === "Admin"
+      )
     );
     if (activeView !== "settings" || !hasAdminAccess) {
       return;
@@ -1225,6 +1360,10 @@ function App() {
   }
 
   async function saveScannerInstruments() {
+    if (!isAdmin) {
+      setInstrumentMessage("Access Denied: Only administrators are authorized to manage scanner instruments.");
+      return;
+    }
     try {
       const response = await putJson<{ message: string; count: number }>("/scanner/instruments", { instruments: instrumentDraft });
       setInstrumentMessage(`${response.message} Saved ${response.count} instruments.`);
@@ -1235,6 +1374,10 @@ function App() {
   }
 
   async function saveScannerBaskets() {
+    if (!isAdmin) {
+      setBasketMessage("Access Denied: Only administrators are authorized to manage scanner baskets.");
+      return;
+    }
     try {
       const response = await putJson<{ message: string; count: number }>("/scanner/baskets", { baskets: basketDraft });
       setBasketMessage(`${response.message} Saved ${response.count} basket instruments.`);
@@ -1245,6 +1388,10 @@ function App() {
   }
 
   async function saveScannerUniverses() {
+    if (!isAdmin) {
+      setUniverseMessage("Access Denied: Only administrators are authorized to manage scanner universes.");
+      return;
+    }
     try {
       const response = await putJson<{ message: string; count: number }>("/scanner/universes", { universes: universeDraft });
       setUniverseMessage(`${response.message} Saved ${response.count} universes.`);
@@ -1255,6 +1402,10 @@ function App() {
   }
 
   async function seedPredefinedBaskets() {
+    if (!isAdmin) {
+      setBasketMessage("Access Denied: Only administrators are authorized to reset or seed predefined baskets.");
+      return;
+    }
     try {
       const response = await postJson<{ message: string; basketsCreated: number; instrumentCount: number }>("/scanner/baskets/predefined");
       setBasketMessage(`${response.message} Created ${response.basketsCreated} baskets with ${response.instrumentCount} resolved stocks.`);
@@ -1427,6 +1578,7 @@ function App() {
             </button>
             <UserTopbarProfile
               currentUser={currentUser}
+              users={users}
               onOpenLogin={() => setIsOAuthModalOpen(true)}
               onSwitchUser={(email) => void handleSwitchUser(email)}
               onLogout={() => void handleLogout()}
@@ -1677,8 +1829,8 @@ function App() {
 
             <DataTable
               columns={canSendNotifications
-                ? ["Symbol", "Direction", "Outcome", "Score", "Verdict", "Reasons", "Action"]
-                : ["Symbol", "Direction", "Outcome", "Score", "Verdict", "Reasons"]
+                ? ["Symbol", "Direction", "Outcome", "Score", "Entry", "Stop", "Target", "Verdict", "Reasons", "Action"]
+                : ["Symbol", "Direction", "Outcome", "Score", "Entry", "Stop", "Target", "Verdict", "Reasons"]
               }
               rows={state.candidates.map((item) => {
                 const baseRow: React.ReactNode[] = [
@@ -1686,6 +1838,9 @@ function App() {
                   item.direction ?? "-",
                   item.outcome,
                   formatNumber(item.score),
+                  formatOptionalNumber(item.entryPrice),
+                  formatOptionalNumber(item.stopPrice),
+                  formatOptionalNumber(item.targetPrice),
                   item.finalVerdict ?? "-",
                   summarizeReasons(item.reasonsJson)
                 ];
@@ -1765,7 +1920,9 @@ function App() {
         <SectionHeader
           eyebrow="Universe setup"
           title="Build the stocks the scanner can see"
-          detail="Create reusable baskets, combine them into universes, and add standalone stocks when a one-off symbol needs to be included."
+          detail={isAdmin
+            ? "Create reusable baskets, combine them into universes, and add standalone stocks when a one-off symbol needs to be included."
+            : "Review active universe compositions and basket definitions. Only administrators hold clearance to edit or save universes."}
           hidden={activeView !== "instruments"}
         />
 
@@ -1783,6 +1940,7 @@ function App() {
                 setActiveView("overview");
               }}
               activeUniverseName={selectedUniverseName}
+              canManage={isAdmin}
             />
           </Panel>
           <Panel title="Basket Library" action={state.scannerInstruments ? `${state.scannerInstruments.baskets.filter((basket) => basket.enabled).length}/${state.scannerInstruments.baskets.length} enabled` : "Loading"}>
@@ -1793,6 +1951,7 @@ function App() {
               onChange={setBasketDraft}
               onSeedPredefined={() => void seedPredefinedBaskets()}
               onSave={() => void saveScannerBaskets()}
+              canManage={isAdmin}
             />
           </Panel>
           <Panel title="Standalone Instruments" action={state.scannerInstruments ? `${state.scannerInstruments.count} active` : "Loading"}>
@@ -1801,6 +1960,7 @@ function App() {
               message={instrumentMessage}
               onChange={setInstrumentDraft}
               onSave={() => void saveScannerInstruments()}
+              canManage={isAdmin}
             />
           </Panel>
         </section>
@@ -2210,6 +2370,7 @@ function App() {
             onUpdateRole={(userId, role) => void handleUpdateRole(userId, role)}
             onToggleStatus={(userId) => void handleToggleStatus(userId)}
             onDeleteUser={(userId) => void handleDeleteUser(userId)}
+            canManage={isAdmin}
           />
         </section>
 
@@ -2876,18 +3037,25 @@ function InstrumentEditor({
   instruments,
   message,
   onChange,
-  onSave
+  onSave,
+  canManage = true
 }: {
   instruments: ScannerInstrument[];
   message?: string | null;
   onChange: (instruments: ScannerInstrument[]) => void;
   onSave: () => void;
+  canManage?: boolean;
 }) {
-  const updateInstrument = (index: number, patch: Partial<ScannerInstrument>) =>
+  const updateInstrument = (index: number, patch: Partial<ScannerInstrument>) => {
+    if (!canManage) return;
     onChange(instruments.map((instrument, currentIndex) => currentIndex === index ? { ...instrument, ...patch } : instrument));
-  const addBlankInstrument = () =>
+  };
+  const addBlankInstrument = () => {
+    if (!canManage) return;
     onChange([{ symbol: "", exchange: "Nse", isin: "", securityId: "", key: "" }, ...instruments]);
+  };
   const addLookupInstrument = (result: LookupResult) => {
+    if (!canManage) return;
     const nextInstrument = lookupResultToInstrument(result);
     const nextKey = nextInstrument.key;
     if (instruments.some((instrument) => instrument.key === nextKey || `${instrument.exchange}:${instrument.symbol}`.toUpperCase() === nextKey)) {
@@ -2899,23 +3067,41 @@ function InstrumentEditor({
 
   return (
     <div className="instrument-editor">
+      {!canManage && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#f8fafc", border: "1px solid #cbd5e1", color: "#334155", padding: "10px 14px", borderRadius: 8, fontSize: 13, fontWeight: 500, marginBottom: 14 }}>
+          <ShieldAlert style={{ width: 18, height: 18, color: "#64748b", flexShrink: 0 }} />
+          <div>
+            <strong style={{ color: "#0f172a" }}>Standalone Instruments (Read-Only):</strong> Only administrators are authorized to add, edit, or remove standalone scanner instruments.
+          </div>
+        </div>
+      )}
       {message && <p className="settings-message">{message}</p>}
-      <div className="instrument-quick-add">
-        <label>
-          Add stock
-          <InstrumentLookupInput
-            value=""
-            exchange="Nse"
-            placeholder="Search stock"
-            clearAfterSelect
-            onValueChange={() => undefined}
-            onSelect={addLookupInstrument}
-          />
-        </label>
-        <button type="button" onClick={addBlankInstrument}>Add blank row</button>
-      </div>
+      {canManage && (
+        <div className="instrument-quick-add">
+          <label>
+            Add stock
+            <InstrumentLookupInput
+              value=""
+              exchange="Nse"
+              placeholder="Search stock"
+              clearAfterSelect
+              onValueChange={() => undefined}
+              onSelect={addLookupInstrument}
+            />
+          </label>
+          <button type="button" onClick={addBlankInstrument}>Add blank row</button>
+        </div>
+      )}
       <div className="instrument-toolbar">
-        <button type="button" onClick={onSave}>Save instruments</button>
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={!canManage}
+          style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+          title={canManage ? undefined : "Admin clearance required"}
+        >
+          Save instruments
+        </button>
       </div>
       <div className="table-scroll">
         <table className="editable-table">
@@ -2923,33 +3109,72 @@ function InstrumentEditor({
             <tr>
               <th>Symbol</th>
               <th>Exchange</th>
+              <th>Price (₹)</th>
               <th>Security ID</th>
               <th>ISIN</th>
               <th>Action</th>
             </tr>
           </thead>
           <tbody>
-            {instruments.map((instrument, index) => (
-              <tr key={`${instrument.exchange}:${instrument.symbol}:${index}`}>
-                <td>
-                  <InstrumentLookupInput
-                    value={instrument.symbol}
-                    exchange={instrument.exchange}
-                    onValueChange={(value) => updateInstrument(index, { symbol: value.toUpperCase() })}
-                    onSelect={(result) => updateInstrument(index, lookupResultToInstrument(result))}
-                  />
-                </td>
-                <td>
-                  <select value={instrument.exchange} onChange={(event) => updateInstrument(index, { exchange: event.target.value })}>
-                    <option value="Nse">NSE</option>
-                    <option value="Bse">BSE</option>
-                  </select>
-                </td>
-                <td><input value={instrument.securityId ?? ""} onChange={(event) => updateInstrument(index, { securityId: event.target.value })} /></td>
-                <td><input value={instrument.isin ?? ""} onChange={(event) => updateInstrument(index, { isin: event.target.value.toUpperCase() })} /></td>
-                <td><button type="button" className="text-danger" onClick={() => onChange(instruments.filter((_, currentIndex) => currentIndex !== index))}>Remove</button></td>
-              </tr>
-            ))}
+            {instruments.map((instrument, index) => {
+              const displayPrice = instrument.lastPrice ?? getStockReferencePrice(instrument.symbol);
+              return (
+                <tr key={`${instrument.exchange}:${instrument.symbol}:${index}`}>
+                  <td>
+                    {canManage ? (
+                      <InstrumentLookupInput
+                        value={instrument.symbol}
+                        exchange={instrument.exchange}
+                        onValueChange={(value) => updateInstrument(index, { symbol: value.toUpperCase(), lastPrice: getStockReferencePrice(value) })}
+                        onSelect={(result) => updateInstrument(index, lookupResultToInstrument(result))}
+                      />
+                    ) : (
+                      <strong style={{ padding: "6px 8px", display: "inline-block" }}>{instrument.symbol}</strong>
+                    )}
+                  </td>
+                  <td>
+                    {canManage ? (
+                      <select value={instrument.exchange} onChange={(event) => updateInstrument(index, { exchange: event.target.value })}>
+                        <option value="Nse">NSE</option>
+                        <option value="Bse">BSE</option>
+                      </select>
+                    ) : (
+                      <span>{instrument.exchange}</span>
+                    )}
+                  </td>
+                  <td>
+                    <span style={{ fontWeight: 600, color: "#0f172a" }}>
+                      {displayPrice ? `₹${formatNumber(displayPrice)}` : "-"}
+                    </span>
+                  </td>
+                  <td>
+                    <input
+                      value={instrument.securityId ?? ""}
+                      disabled={!canManage}
+                      onChange={(event) => updateInstrument(index, { securityId: event.target.value })}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      value={instrument.isin ?? ""}
+                      disabled={!canManage}
+                      onChange={(event) => updateInstrument(index, { isin: event.target.value.toUpperCase() })}
+                    />
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="text-danger"
+                      disabled={!canManage}
+                      style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+                      onClick={() => canManage && onChange(instruments.filter((_, currentIndex) => currentIndex !== index))}
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -3029,21 +3254,31 @@ function InstrumentLookupInput({
       {(isLoading || suggestions.length > 0) && (
         <div className="lookup-suggestions">
           {isLoading && <span>Searching...</span>}
-          {suggestions.map((result) => (
-            <button
-              key={`${result.exchange}:${result.securityId}:${result.symbol}`}
-              type="button"
-              onClick={() => {
-                setQuery(clearAfterSelect ? "" : result.symbol);
-                setUserEdited(false);
-                setSuggestions([]);
-                onSelect(result);
-              }}
-            >
-              <strong>{result.symbol}</strong>
-              <small>{result.exchange} · {result.securityId} · {result.displayName || result.symbolName || "Equity"}</small>
-            </button>
-          ))}
+          {suggestions.map((result) => {
+            const price = result.lastPrice ?? getStockReferencePrice(result.symbol);
+            return (
+              <button
+                key={`${result.exchange}:${result.securityId}:${result.symbol}`}
+                type="button"
+                onClick={() => {
+                  setQuery(clearAfterSelect ? "" : result.symbol);
+                  setUserEdited(false);
+                  setSuggestions([]);
+                  onSelect(result);
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <strong>{result.symbol}</strong>
+                  {price ? (
+                    <span style={{ fontSize: 12, fontWeight: 700, color: "#0f766e" }}>
+                      ₹{formatNumber(price)}
+                    </span>
+                  ) : null}
+                </div>
+                <small>{result.exchange} · {result.securityId} · {result.displayName || result.symbolName || "Equity"}</small>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -3407,7 +3642,8 @@ function UniverseEditor({
   onChange,
   onSave,
   onSelectActiveUniverse,
-  activeUniverseName
+  activeUniverseName,
+  canManage = true
 }: {
   baskets: ScannerBasket[];
   draft: ScannerUniverseDraft[];
@@ -3416,6 +3652,7 @@ function UniverseEditor({
   onSave: () => void;
   onSelectActiveUniverse?: (name: string) => void;
   activeUniverseName?: string;
+  canManage?: boolean;
 }) {
   const [searchQuery, setSearchQuery] = React.useState("");
   const [filterTab, setFilterTab] = React.useState<"all" | "enabled" | "disabled">("all");
@@ -3424,18 +3661,26 @@ function UniverseEditor({
   const [inspectingIndex, setInspectingIndex] = React.useState<number | null>(null);
   const [bulkAddIndex, setBulkAddIndex] = React.useState<number | null>(null);
 
-  const replaceUniverses = (next: ScannerUniverseDraft[]) => onChange(next);
+  const replaceUniverses = (next: ScannerUniverseDraft[]) => {
+    if (!canManage) return;
+    onChange(next);
+  };
 
-  const updateUniverse = (index: number, patch: Partial<ScannerUniverseDraft>) =>
+  const updateUniverse = (index: number, patch: Partial<ScannerUniverseDraft>) => {
+    if (!canManage) return;
     replaceUniverses(draft.map((universe, currentIndex) => currentIndex === index ? { ...universe, ...patch } : universe));
+  };
 
-  const updateUniverseInstrument = (universeIndex: number, instrumentIndex: number, patch: Partial<ScannerInstrument>) =>
+  const updateUniverseInstrument = (universeIndex: number, instrumentIndex: number, patch: Partial<ScannerInstrument>) => {
+    if (!canManage) return;
     updateUniverse(universeIndex, {
       directInstruments: draft[universeIndex].directInstruments.map((instrument, currentIndex) =>
         currentIndex === instrumentIndex ? { ...instrument, ...patch } : instrument)
     });
+  };
 
   const addUniverse = () => {
+    if (!canManage) return;
     const newIdx = draft.length;
     replaceUniverses([
       ...draft,
@@ -3450,6 +3695,7 @@ function UniverseEditor({
   };
 
   const duplicateUniverse = (index: number) => {
+    if (!canManage) return;
     const src = draft[index];
     const copy: ScannerUniverseDraft = {
       name: `${src.name} (Copy)`,
@@ -3461,17 +3707,22 @@ function UniverseEditor({
     setExpandedCards((prev) => ({ ...prev, [index + 1]: true }));
   };
 
-  const addUniverseInstrument = (universeIndex: number, result: LookupResult) =>
+  const addUniverseInstrument = (universeIndex: number, result: LookupResult) => {
+    if (!canManage) return;
     updateUniverse(universeIndex, {
       directInstruments: [...draft[universeIndex].directInstruments, lookupResultToInstrument(result)]
     });
+  };
 
-  const addBlankUniverseInstrument = (universeIndex: number) =>
+  const addBlankUniverseInstrument = (universeIndex: number) => {
+    if (!canManage) return;
     updateUniverse(universeIndex, {
       directInstruments: [...draft[universeIndex].directInstruments, { symbol: "", exchange: "Nse", isin: "", securityId: "", key: "" }]
     });
+  };
 
   const toggleBasket = (universeIndex: number, basketName: string, checked: boolean) => {
+    if (!canManage) return;
     const current = draft[universeIndex].basketNames;
     updateUniverse(universeIndex, {
       basketNames: checked
@@ -3481,6 +3732,7 @@ function UniverseEditor({
   };
 
   const handleBulkImport = (universeIndex: number, symbols: string[], exchange: "Nse" | "Bse") => {
+    if (!canManage) return;
     const current = draft[universeIndex].directInstruments;
     const existing = new Set(current.map((i) => `${i.exchange}:${i.symbol}`.toUpperCase()));
     const toAdd: ScannerInstrument[] = [];
@@ -3505,6 +3757,7 @@ function UniverseEditor({
   };
 
   const handleApplyPreset = (preset: typeof PRESET_UNIVERSES[0]) => {
+    if (!canManage) return;
     // Find matching baskets
     const matchedBaskets = baskets.filter((b) =>
       preset.basketKeywords.some((kw) => b.name.toLowerCase().includes(kw))
@@ -3565,6 +3818,14 @@ function UniverseEditor({
 
   return (
     <div className="universe-studio-container">
+      {!canManage && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#f8fafc", border: "1px solid #cbd5e1", color: "#334155", padding: "10px 14px", borderRadius: 8, fontSize: 13, fontWeight: 500, marginBottom: 14 }}>
+          <ShieldAlert style={{ width: 18, height: 18, color: "#64748b", flexShrink: 0 }} />
+          <div>
+            <strong style={{ color: "#0f172a" }}>Universe Builder (Read-Only):</strong> Only administrators (Super Admin / Admin) are authorized to create, edit, or save scanner universes. You may inspect constituent stocks and launch scan targets.
+          </div>
+        </div>
+      )}
       {message && <p className="settings-message">{message}</p>}
 
       {/* Top Studio Metrics Bar */}
@@ -3598,8 +3859,10 @@ function UniverseEditor({
             key={preset.name}
             type="button"
             className="preset-chip-btn"
+            disabled={!canManage}
+            style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
             onClick={() => handleApplyPreset(preset)}
-            title={`Add ${preset.name} (${preset.badge})`}
+            title={canManage ? `Add ${preset.name} (${preset.badge})` : "Admin clearance required to add presets"}
           >
             + {preset.name}
           </button>
@@ -3643,11 +3906,25 @@ function UniverseEditor({
         </div>
 
         <div className="universe-toolbar-actions">
-          <button type="button" className="btn-secondary-action" onClick={addUniverse}>
+          <button
+            type="button"
+            className="btn-secondary-action"
+            disabled={!canManage}
+            style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+            title={canManage ? "Create new universe" : "Admin clearance required"}
+            onClick={addUniverse}
+          >
             <Plus style={{ width: 14, height: 14 }} />
             <span>Create Universe</span>
           </button>
-          <button type="button" className="btn-primary-action" onClick={onSave}>
+          <button
+            type="button"
+            className="btn-primary-action"
+            disabled={!canManage}
+            style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+            title={canManage ? "Save universes to system" : "Admin clearance required"}
+            onClick={onSave}
+          >
             <Check style={{ width: 14, height: 14 }} />
             <span>Save Universes</span>
           </button>
@@ -3661,7 +3938,7 @@ function UniverseEditor({
           <span>
             {searchQuery ? `No universe matched query "${searchQuery}".` : "Create your first universe or use a Quick Market Preset above."}
           </span>
-          <button type="button" onClick={addUniverse}>+ Create First Universe</button>
+          {canManage && <button type="button" onClick={addUniverse}>+ Create First Universe</button>}
         </div>
       )}
 
@@ -3703,16 +3980,18 @@ function UniverseEditor({
                   <input
                     className="universe-title-input"
                     value={universe.name}
+                    disabled={!canManage}
                     placeholder="Universe name..."
                     onChange={(event) => updateUniverse(originalIndex, { name: event.target.value })}
                   />
                 </div>
 
                 <div className="universe-card-stats">
-                  <label className="toggle-row" style={{ cursor: "pointer" }}>
+                  <label className="toggle-row" style={{ cursor: canManage ? "pointer" : "default" }}>
                     <input
                       type="checkbox"
                       checked={universe.enabled}
+                      disabled={!canManage}
                       onChange={(event) => updateUniverse(originalIndex, { enabled: event.target.checked })}
                     />
                     <span style={{ fontWeight: 700, color: universe.enabled ? "#15803d" : "#64748b" }}>
@@ -3740,6 +4019,8 @@ function UniverseEditor({
                         <button
                           type="button"
                           className="btn-action-small"
+                          disabled={!canManage}
+                          style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
                           onClick={() => updateUniverse(originalIndex, { basketNames: baskets.map((b) => b.name) })}
                         >
                           Select All
@@ -3747,6 +4028,8 @@ function UniverseEditor({
                         <button
                           type="button"
                           className="btn-action-small"
+                          disabled={!canManage}
+                          style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
                           onClick={() => updateUniverse(originalIndex, { basketNames: [] })}
                         >
                           Clear
@@ -3760,7 +4043,8 @@ function UniverseEditor({
                           <div
                             key={basket.name}
                             className={`basket-chip ${isSelected ? "selected" : ""}`}
-                            onClick={() => toggleBasket(originalIndex, basket.name, !isSelected)}
+                            style={{ cursor: canManage ? "pointer" : "default", opacity: !canManage && !isSelected ? 0.6 : 1 }}
+                            onClick={() => canManage && toggleBasket(originalIndex, basket.name, !isSelected)}
                           >
                             <span>{isSelected ? "✓" : "+"}</span>
                             <span>{basket.name}</span>
@@ -3782,6 +4066,8 @@ function UniverseEditor({
                         <button
                           type="button"
                           className="btn-action-small"
+                          disabled={!canManage}
+                          style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
                           onClick={() => setBulkAddIndex(originalIndex)}
                         >
                           <FileText style={{ width: 11, height: 11 }} />
@@ -3797,50 +4083,58 @@ function UniverseEditor({
                       </div>
                     </div>
 
-                    <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
-                      <div style={{ flex: 1 }}>
-                        <InstrumentLookupInput
-                          value=""
-                          exchange="Nse"
-                          placeholder="Search Dhan/NSE stock to add directly (e.g. RELIANCE)..."
-                          clearAfterSelect
-                          onValueChange={() => undefined}
-                          onSelect={(result) => addUniverseInstrument(originalIndex, result)}
-                        />
+                    {canManage && (
+                      <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+                        <div style={{ flex: 1 }}>
+                          <InstrumentLookupInput
+                            value=""
+                            exchange="Nse"
+                            placeholder="Search Dhan/NSE stock to add directly (e.g. RELIANCE)..."
+                            clearAfterSelect
+                            onValueChange={() => undefined}
+                            onSelect={(result) => addUniverseInstrument(originalIndex, result)}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          className="btn-secondary-action"
+                          style={{ minHeight: 34, padding: "0 10px", fontSize: 12 }}
+                          onClick={() => addBlankUniverseInstrument(originalIndex)}
+                        >
+                          + Add Custom Row
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        className="btn-secondary-action"
-                        style={{ minHeight: 34, padding: "0 10px", fontSize: 12 }}
-                        onClick={() => addBlankUniverseInstrument(originalIndex)}
-                      >
-                        + Add Custom Row
-                      </button>
-                    </div>
+                    )}
 
                     {/* Quick Direct Stock Tags */}
                     {universe.directInstruments.length > 0 && (
                       <div className="direct-stocks-wrap">
-                        {universe.directInstruments.map((instrument, instrumentIndex) => (
-                          <div
-                            key={`${universe.name}:${instrument.exchange}:${instrument.symbol}:${instrumentIndex}`}
-                            className="direct-stock-tag"
-                          >
-                            <span>{instrument.symbol || "(blank)"}</span>
-                            <span style={{ fontSize: 9, opacity: 0.7 }}>{instrument.exchange}</span>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                updateUniverse(originalIndex, {
-                                  directInstruments: universe.directInstruments.filter((_, i) => i !== instrumentIndex)
-                                })
-                              }
-                              title="Remove stock"
+                        {universe.directInstruments.map((instrument, instrumentIndex) => {
+                          const tagPrice = instrument.lastPrice ?? getStockReferencePrice(instrument.symbol);
+                          return (
+                            <div
+                              key={`${universe.name}:${instrument.exchange}:${instrument.symbol}:${instrumentIndex}`}
+                              className="direct-stock-tag"
                             >
-                              &times;
-                            </button>
-                          </div>
-                        ))}
+                              <span>{instrument.symbol || "(blank)"}</span>
+                              {tagPrice ? <span style={{ fontSize: 10, fontWeight: 700, color: "#065f46" }}>₹{formatNumber(tagPrice)}</span> : null}
+                              <span style={{ fontSize: 9, opacity: 0.7 }}>{instrument.exchange}</span>
+                              {canManage && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateUniverse(originalIndex, {
+                                      directInstruments: universe.directInstruments.filter((_, i) => i !== instrumentIndex)
+                                    })
+                                  }
+                                  title="Remove stock"
+                                >
+                                  &times;
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
 
@@ -3859,60 +4153,81 @@ function UniverseEditor({
                             <tr>
                               <th>Symbol</th>
                               <th>Exchange</th>
+                              <th>Price (₹)</th>
                               <th>Security ID</th>
                               <th>ISIN</th>
                               <th>Action</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {universe.directInstruments.map((instrument, instrumentIndex) => (
-                              <tr key={`detailed:${universe.name}:${instrumentIndex}`}>
-                                <td>
-                                  <InstrumentLookupInput
-                                    value={instrument.symbol}
-                                    exchange={instrument.exchange}
-                                    onValueChange={(val) => updateUniverseInstrument(originalIndex, instrumentIndex, { symbol: val.toUpperCase() })}
-                                    onSelect={(res) => updateUniverseInstrument(originalIndex, instrumentIndex, lookupResultToInstrument(res))}
-                                  />
-                                </td>
-                                <td>
-                                  <select
-                                    value={instrument.exchange}
-                                    onChange={(e) => updateUniverseInstrument(originalIndex, instrumentIndex, { exchange: e.target.value })}
-                                  >
-                                    <option value="Nse">NSE</option>
-                                    <option value="Bse">BSE</option>
-                                  </select>
-                                </td>
-                                <td>
-                                  <input
-                                    value={instrument.securityId ?? ""}
-                                    placeholder="Security ID"
-                                    onChange={(e) => updateUniverseInstrument(originalIndex, instrumentIndex, { securityId: e.target.value })}
-                                  />
-                                </td>
-                                <td>
-                                  <input
-                                    value={instrument.isin ?? ""}
-                                    placeholder="ISIN"
-                                    onChange={(e) => updateUniverseInstrument(originalIndex, instrumentIndex, { isin: e.target.value.toUpperCase() })}
-                                  />
-                                </td>
-                                <td>
-                                  <button
-                                    type="button"
-                                    className="text-danger"
-                                    onClick={() =>
-                                      updateUniverse(originalIndex, {
-                                        directInstruments: universe.directInstruments.filter((_, i) => i !== instrumentIndex)
-                                      })
-                                    }
-                                  >
-                                    Remove
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
+                            {universe.directInstruments.map((instrument, instrumentIndex) => {
+                              const displayPrice = instrument.lastPrice ?? getStockReferencePrice(instrument.symbol);
+                              return (
+                                <tr key={`detailed:${universe.name}:${instrumentIndex}`}>
+                                  <td>
+                                    {canManage ? (
+                                      <InstrumentLookupInput
+                                        value={instrument.symbol}
+                                        exchange={instrument.exchange}
+                                        onValueChange={(val) => updateUniverseInstrument(originalIndex, instrumentIndex, { symbol: val.toUpperCase() })}
+                                        onSelect={(res) => updateUniverseInstrument(originalIndex, instrumentIndex, lookupResultToInstrument(res))}
+                                      />
+                                    ) : (
+                                      <strong style={{ padding: "4px 6px", display: "inline-block" }}>{instrument.symbol}</strong>
+                                    )}
+                                  </td>
+                                  <td>
+                                    {canManage ? (
+                                      <select
+                                        value={instrument.exchange}
+                                        onChange={(e) => updateUniverseInstrument(originalIndex, instrumentIndex, { exchange: e.target.value })}
+                                      >
+                                        <option value="Nse">NSE</option>
+                                        <option value="Bse">BSE</option>
+                                      </select>
+                                    ) : (
+                                      <span>{instrument.exchange}</span>
+                                    )}
+                                  </td>
+                                  <td>
+                                    <span style={{ fontWeight: 600, color: "#0f172a" }}>
+                                      {displayPrice ? `₹${formatNumber(displayPrice)}` : "-"}
+                                    </span>
+                                  </td>
+                                  <td>
+                                    <input
+                                      value={instrument.securityId ?? ""}
+                                      placeholder="Security ID"
+                                      disabled={!canManage}
+                                      onChange={(e) => updateUniverseInstrument(originalIndex, instrumentIndex, { securityId: e.target.value })}
+                                    />
+                                  </td>
+                                  <td>
+                                    <input
+                                      value={instrument.isin ?? ""}
+                                      placeholder="ISIN"
+                                      disabled={!canManage}
+                                      onChange={(e) => updateUniverseInstrument(originalIndex, instrumentIndex, { isin: e.target.value.toUpperCase() })}
+                                    />
+                                  </td>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="text-danger"
+                                      disabled={!canManage}
+                                      style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+                                      onClick={() =>
+                                        canManage && updateUniverse(originalIndex, {
+                                          directInstruments: universe.directInstruments.filter((_, i) => i !== instrumentIndex)
+                                        })
+                                      }
+                                    >
+                                      Remove
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -3945,8 +4260,10 @@ function UniverseEditor({
                   <button
                     type="button"
                     className="btn-card-action"
+                    disabled={!canManage}
+                    style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
                     onClick={() => duplicateUniverse(originalIndex)}
-                    title="Clone this universe"
+                    title={canManage ? "Clone this universe" : "Admin clearance required"}
                   >
                     <Copy style={{ width: 13, height: 13 }} />
                     <span>Clone</span>
@@ -3956,8 +4273,10 @@ function UniverseEditor({
                 <button
                   type="button"
                   className="btn-card-action btn-card-delete"
-                  onClick={() => replaceUniverses(draft.filter((_, i) => i !== originalIndex))}
-                  title="Delete this universe"
+                  disabled={!canManage}
+                  style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+                  onClick={() => canManage && replaceUniverses(draft.filter((_, i) => i !== originalIndex))}
+                  title={canManage ? "Delete this universe" : "Admin clearance required"}
                 >
                   <Trash2 style={{ width: 13, height: 13 }} />
                   <span>Delete</span>
@@ -3998,7 +4317,8 @@ function BasketEditor({
   message,
   onChange,
   onSeedPredefined,
-  onSave
+  onSave,
+  canManage = true
 }: {
   baskets: ScannerBasket[];
   draft: ScannerBasketDraft[];
@@ -4006,28 +4326,50 @@ function BasketEditor({
   onChange: (value: ScannerBasketDraft[]) => void;
   onSeedPredefined: () => void;
   onSave: () => void;
+  canManage?: boolean;
 }) {
   const [jsonDraft, setJsonDraft] = React.useState("");
   const [jsonError, setJsonError] = React.useState<string | null>(null);
-  const replaceBaskets = (next: ScannerBasketDraft[]) => onChange(next);
-  const updateBasket = (index: number, patch: Partial<ScannerBasketDraft>) =>
+
+  const replaceBaskets = (next: ScannerBasketDraft[]) => {
+    if (!canManage) return;
+    onChange(next);
+  };
+
+  const updateBasket = (index: number, patch: Partial<ScannerBasketDraft>) => {
+    if (!canManage) return;
     replaceBaskets(draft.map((basket, currentIndex) => currentIndex === index ? { ...basket, ...patch } : basket));
-  const updateBasketInstrument = (basketIndex: number, instrumentIndex: number, patch: Partial<ScannerInstrument>) =>
+  };
+
+  const updateBasketInstrument = (basketIndex: number, instrumentIndex: number, patch: Partial<ScannerInstrument>) => {
+    if (!canManage) return;
     updateBasket(basketIndex, {
       instruments: draft[basketIndex].instruments.map((instrument, currentIndex) =>
         currentIndex === instrumentIndex ? { ...instrument, ...patch } : instrument)
     });
-  const addBasketInstrument = (basketIndex: number, result: LookupResult) =>
+  };
+
+  const addBasketInstrument = (basketIndex: number, result: LookupResult) => {
+    if (!canManage) return;
     updateBasket(basketIndex, {
       instruments: [...draft[basketIndex].instruments, lookupResultToInstrument(result)]
     });
-  const addBlankBasketInstrument = (basketIndex: number) =>
+  };
+
+  const addBlankBasketInstrument = (basketIndex: number) => {
+    if (!canManage) return;
     updateBasket(basketIndex, {
       instruments: [...draft[basketIndex].instruments, { symbol: "", exchange: "Nse", isin: "", securityId: "", key: "" }]
     });
-  const addBasket = () =>
+  };
+
+  const addBasket = () => {
+    if (!canManage) return;
     replaceBaskets([...draft, { name: `Basket ${draft.length + 1}`, enabled: true, maxSymbols: 200, instruments: [] }]);
+  };
+
   const importJson = () => {
+    if (!canManage) return;
     try {
       const parsed = JSON.parse(jsonDraft) as ScannerBasketDraft[];
       if (!Array.isArray(parsed)) {
@@ -4049,17 +4391,57 @@ function BasketEditor({
 
   return (
     <div className="instrument-editor">
+      {!canManage && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#f8fafc", border: "1px solid #cbd5e1", color: "#334155", padding: "10px 14px", borderRadius: 8, fontSize: 13, fontWeight: 500, marginBottom: 14 }}>
+          <ShieldAlert style={{ width: 18, height: 18, color: "#64748b", flexShrink: 0 }} />
+          <div>
+            <strong style={{ color: "#0f172a" }}>Basket Library (Read-Only):</strong> Only administrators (Super Admin / Admin) are authorized to create, configure, or save scanner baskets. You can inspect saved baskets and constituent instruments.
+          </div>
+        </div>
+      )}
       {message && <p className="settings-message">{message}</p>}
       <div className="instrument-toolbar primary-toolbar">
-        <button type="button" onClick={addBasket}>Create basket</button>
-        <button type="button" onClick={onSeedPredefined}>Add predefined baskets</button>
-        <button type="button" onClick={() => replaceBaskets([{
-          name: "Nifty200",
-          enabled: true,
-          maxSymbols: 200,
-          instruments: [{ symbol: "RELIANCE", exchange: "Nse", isin: "INE002A01018", securityId: "2885", key: "NSE:RELIANCE" }]
-        }])}>Use template</button>
-        <button type="button" onClick={onSave}>Save baskets</button>
+        <button
+          type="button"
+          disabled={!canManage}
+          style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+          title={canManage ? undefined : "Admin clearance required"}
+          onClick={addBasket}
+        >
+          Create basket
+        </button>
+        <button
+          type="button"
+          disabled={!canManage}
+          style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+          title={canManage ? undefined : "Admin clearance required"}
+          onClick={onSeedPredefined}
+        >
+          Add predefined baskets
+        </button>
+        <button
+          type="button"
+          disabled={!canManage}
+          style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+          title={canManage ? undefined : "Admin clearance required"}
+          onClick={() => replaceBaskets([{
+            name: "Nifty200",
+            enabled: true,
+            maxSymbols: 200,
+            instruments: [{ symbol: "RELIANCE", exchange: "Nse", isin: "INE002A01018", securityId: "2885", key: "NSE:RELIANCE" }]
+          }])}
+        >
+          Use template
+        </button>
+        <button
+          type="button"
+          disabled={!canManage}
+          style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+          title={canManage ? undefined : "Admin clearance required"}
+          onClick={onSave}
+        >
+          Save baskets
+        </button>
       </div>
       <DataTable
         columns={["Basket", "Enabled", "Max symbols", "Configured"]}
@@ -4076,87 +4458,152 @@ function BasketEditor({
           <div className="empty-editor">
             <strong>No baskets in draft</strong>
             <span>Create a basket, add stocks with lookup, then save.</span>
-            <button type="button" onClick={addBasket}>Create first basket</button>
+            {canManage && <button type="button" onClick={addBasket}>Create first basket</button>}
           </div>
         )}
         {draft.map((basket, basketIndex) => (
           <article className="basket-card" key={`${basket.name}:${basketIndex}`}>
             <header>
-              <input value={basket.name} onChange={(event) => updateBasket(basketIndex, { name: event.target.value })} />
-              <label className="toggle-row">
-                <input type="checkbox" checked={basket.enabled} onChange={(event) => updateBasket(basketIndex, { enabled: event.target.checked })} />
+              <input
+                value={basket.name}
+                disabled={!canManage}
+                onChange={(event) => updateBasket(basketIndex, { name: event.target.value })}
+              />
+              <label className="toggle-row" style={{ cursor: canManage ? "pointer" : "default" }}>
+                <input
+                  type="checkbox"
+                  checked={basket.enabled}
+                  disabled={!canManage}
+                  onChange={(event) => updateBasket(basketIndex, { enabled: event.target.checked })}
+                />
                 Enabled
               </label>
-              <NumberField label="Max symbols" value={basket.maxSymbols} onChange={(value) => updateBasket(basketIndex, { maxSymbols: Math.round(value) })} />
-              <button type="button" className="text-danger" onClick={() => replaceBaskets(draft.filter((_, currentIndex) => currentIndex !== basketIndex))}>Remove basket</button>
-            </header>
-            <div className="basket-add-row">
-              <InstrumentLookupInput
-                value=""
-                exchange="Nse"
-                placeholder="Search stock to add"
-                clearAfterSelect
-                onValueChange={() => undefined}
-                onSelect={(result) => addBasketInstrument(basketIndex, result)}
+              <NumberField
+                label="Max symbols"
+                value={basket.maxSymbols}
+                disabled={!canManage}
+                onChange={(value) => updateBasket(basketIndex, { maxSymbols: Math.round(value) })}
               />
-              <button type="button" onClick={() => addBlankBasketInstrument(basketIndex)}>Add blank row</button>
-            </div>
+              <button
+                type="button"
+                className="text-danger"
+                disabled={!canManage}
+                style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+                onClick={() => canManage && replaceBaskets(draft.filter((_, currentIndex) => currentIndex !== basketIndex))}
+              >
+                Remove basket
+              </button>
+            </header>
+            {canManage && (
+              <div className="basket-add-row">
+                <InstrumentLookupInput
+                  value=""
+                  exchange="Nse"
+                  placeholder="Search stock to add"
+                  clearAfterSelect
+                  onValueChange={() => undefined}
+                  onSelect={(result) => addBasketInstrument(basketIndex, result)}
+                />
+                <button type="button" onClick={() => addBlankBasketInstrument(basketIndex)}>Add blank row</button>
+              </div>
+            )}
             <div className="table-scroll">
               <table className="editable-table">
                 <thead>
                   <tr>
                     <th>Symbol</th>
                     <th>Exchange</th>
+                    <th>Price (₹)</th>
                     <th>Security ID</th>
                     <th>ISIN</th>
                     <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {basket.instruments.map((instrument, instrumentIndex) => (
-                    <tr key={`${basket.name}:${instrument.exchange}:${instrument.symbol}:${instrumentIndex}`}>
-                      <td>
-                        <InstrumentLookupInput
-                          value={instrument.symbol}
-                          exchange={instrument.exchange}
-                          onValueChange={(value) => updateBasketInstrument(basketIndex, instrumentIndex, { symbol: value.toUpperCase() })}
-                          onSelect={(result) => updateBasketInstrument(basketIndex, instrumentIndex, lookupResultToInstrument(result))}
-                        />
-                      </td>
-                      <td>
-                        <select value={instrument.exchange} onChange={(event) => updateBasketInstrument(basketIndex, instrumentIndex, { exchange: event.target.value })}>
-                          <option value="Nse">NSE</option>
-                          <option value="Bse">BSE</option>
-                        </select>
-                      </td>
-                      <td><input value={instrument.securityId ?? ""} onChange={(event) => updateBasketInstrument(basketIndex, instrumentIndex, { securityId: event.target.value })} /></td>
-                      <td><input value={instrument.isin ?? ""} onChange={(event) => updateBasketInstrument(basketIndex, instrumentIndex, { isin: event.target.value.toUpperCase() })} /></td>
-                      <td><button type="button" className="text-danger" onClick={() => updateBasket(basketIndex, { instruments: basket.instruments.filter((_, currentIndex) => currentIndex !== instrumentIndex) })}>Remove</button></td>
-                    </tr>
-                  ))}
+                  {basket.instruments.map((instrument, instrumentIndex) => {
+                    const displayPrice = instrument.lastPrice ?? getStockReferencePrice(instrument.symbol);
+                    return (
+                      <tr key={`${basket.name}:${instrument.exchange}:${instrument.symbol}:${instrumentIndex}`}>
+                        <td>
+                          {canManage ? (
+                            <InstrumentLookupInput
+                              value={instrument.symbol}
+                              exchange={instrument.exchange}
+                              onValueChange={(value) => updateBasketInstrument(basketIndex, instrumentIndex, { symbol: value.toUpperCase() })}
+                              onSelect={(result) => updateBasketInstrument(basketIndex, instrumentIndex, lookupResultToInstrument(result))}
+                            />
+                          ) : (
+                            <strong style={{ padding: "4px 6px", display: "inline-block" }}>{instrument.symbol}</strong>
+                          )}
+                        </td>
+                        <td>
+                          {canManage ? (
+                            <select value={instrument.exchange} onChange={(event) => updateBasketInstrument(basketIndex, instrumentIndex, { exchange: event.target.value })}>
+                              <option value="Nse">NSE</option>
+                              <option value="Bse">BSE</option>
+                            </select>
+                          ) : (
+                            <span>{instrument.exchange}</span>
+                          )}
+                        </td>
+                        <td>
+                          <span style={{ fontWeight: 600, color: "#0f172a" }}>
+                            {displayPrice ? `₹${formatNumber(displayPrice)}` : "-"}
+                          </span>
+                        </td>
+                        <td>
+                          <input
+                            value={instrument.securityId ?? ""}
+                            disabled={!canManage}
+                            onChange={(event) => updateBasketInstrument(basketIndex, instrumentIndex, { securityId: event.target.value })}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            value={instrument.isin ?? ""}
+                            disabled={!canManage}
+                            onChange={(event) => updateBasketInstrument(basketIndex, instrumentIndex, { isin: event.target.value.toUpperCase() })}
+                          />
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="text-danger"
+                            disabled={!canManage}
+                            style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+                            onClick={() => canManage && updateBasket(basketIndex, { instruments: basket.instruments.filter((_, currentIndex) => currentIndex !== instrumentIndex) })}
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           </article>
         ))}
       </div>
-      <div className="basket-editor">
-        <label>
-          Import basket JSON
-          <textarea
-            value={jsonDraft}
-            onChange={(event) => setJsonDraft(event.target.value)}
-            spellCheck={false}
-            rows={10}
-            placeholder={JSON.stringify(draft, null, 2)}
-          />
-        </label>
-        {jsonError && <p className="settings-message">{jsonError}</p>}
-        <div className="instrument-toolbar">
-          <button type="button" onClick={() => setJsonDraft(JSON.stringify(draft, null, 2))}>Export current draft</button>
-          <button type="button" onClick={importJson}>Import JSON</button>
+      {canManage && (
+        <div className="basket-editor">
+          <label>
+            Import basket JSON
+            <textarea
+              value={jsonDraft}
+              onChange={(event) => setJsonDraft(event.target.value)}
+              spellCheck={false}
+              rows={10}
+              placeholder={JSON.stringify(draft, null, 2)}
+            />
+          </label>
+          {jsonError && <p className="settings-message">{jsonError}</p>}
+          <div className="instrument-toolbar">
+            <button type="button" onClick={() => setJsonDraft(JSON.stringify(draft, null, 2))}>Export current draft</button>
+            <button type="button" onClick={importJson}>Import JSON</button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -4168,7 +4615,8 @@ function lookupResultToInstrument(result: LookupResult): ScannerInstrument {
     exchange,
     isin: result.isin ?? "",
     securityId: result.securityId,
-    key: `${exchange}:${result.symbol}`.toUpperCase()
+    key: `${exchange}:${result.symbol}`.toUpperCase(),
+    lastPrice: result.lastPrice ?? getStockReferencePrice(result.symbol)
   };
 }
 
@@ -4232,7 +4680,8 @@ function UserManagementPanel({
   onAddUser,
   onUpdateRole,
   onToggleStatus,
-  onDeleteUser
+  onDeleteUser,
+  canManage = true
 }: {
   currentUser: AppUser | null;
   users: AppUser[];
@@ -4241,6 +4690,7 @@ function UserManagementPanel({
   onUpdateRole: (userId: string, role: AppUser["role"]) => void;
   onToggleStatus: (userId: string) => void;
   onDeleteUser: (userId: string) => void;
+  canManage?: boolean;
 }) {
   const [filterRole, setFilterRole] = React.useState<string>("all");
   const [filterProvider, setFilterProvider] = React.useState<string>("all");
@@ -4257,6 +4707,7 @@ function UserManagementPanel({
   const activeCount = users.filter((u) => u.status === "Active").length;
 
   const handleRoleUpdate = (userId: string, targetName: string, role: AppUser["role"]) => {
+    if (!canManage) return;
     onUpdateRole(userId, role);
     setNotification(`Successfully assigned ${role} role to ${targetName}.`);
     setTimeout(() => setNotification(null), 3500);
@@ -4284,12 +4735,13 @@ function UserManagementPanel({
       </div>
 
       <div className="security-policy-callout">
-        <ShieldCheck style={{ width: 22, height: 22, flexShrink: 0, color: "#10b981" }} />
+        <ShieldCheck style={{ width: 22, height: 22, flexShrink: 0, color: canManage ? "#10b981" : "#64748b" }} />
         <div>
-          <strong>Role-Based Access Control: Admin Clearance Enabled</strong>
+          <strong>Role-Based Access Control: {canManage ? "Admin Clearance Active" : "Team Directory (Read-Only Mode)"}</strong>
           <p style={{ margin: "4px 0 0", fontSize: 12 }}>
-            Platform Administrators and Super Admins hold full clearance to access and modify Broker Settings, Dhan HQ Credentials, Scanner Universes, and Team Access.
-            You can grant the <strong>Admin</strong> role to any user in the list below with 1 click.
+            {canManage
+              ? "Platform Administrators and Super Admins hold full clearance to access and modify Broker Settings, Dhan HQ Credentials, Scanner Universes, and Team Access. You can grant the Admin role to any user in the list below with 1 click."
+              : "Only administrators hold clearance to invite users, change roles, or modify account status. Current session is signed in with restricted clearance."}
           </p>
         </div>
       </div>
@@ -4326,7 +4778,14 @@ function UserManagementPanel({
               </select>
             </label>
           </div>
-          <button type="button" className="btn-add-user" onClick={onAddUser}>
+          <button
+            type="button"
+            className="btn-add-user"
+            disabled={!canManage}
+            style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+            title={canManage ? "Add / Invite User" : "Admin clearance required"}
+            onClick={() => canManage && onAddUser()}
+          >
             <UserPlus style={{ width: 14, height: 14 }} /> Add / Invite User
           </button>
         </div>
@@ -4395,9 +4854,10 @@ function UserManagementPanel({
                           <>
                             <select
                               value={user.role}
+                              disabled={!canManage}
                               className={`role-select-inline ${user.role === "Admin" ? "role-select-admin" : ""}`}
                               onChange={(e) => handleRoleUpdate(user.id, user.name, e.target.value as any)}
-                              title="Assign role to this user"
+                              title={canManage ? "Assign role to this user" : "Admin clearance required"}
                             >
                               <option value="Admin">Admin (Settings & Universes Clearance)</option>
                               <option value="Super Admin">Super Admin</option>
@@ -4409,8 +4869,10 @@ function UserManagementPanel({
                               <button
                                 type="button"
                                 className="btn-action-promote-admin"
-                                onClick={() => handleRoleUpdate(user.id, user.name, "Admin")}
-                                title={`Assign Admin role to ${user.name}`}
+                                disabled={!canManage}
+                                style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+                                onClick={() => canManage && handleRoleUpdate(user.id, user.name, "Admin")}
+                                title={canManage ? `Assign Admin role to ${user.name}` : "Admin clearance required"}
                               >
                                 <ShieldCheck style={{ width: 12, height: 12 }} />
                                 <span>Make Admin</span>
@@ -4425,15 +4887,19 @@ function UserManagementPanel({
                             <button
                               type="button"
                               className="btn-action-toggle"
-                              onClick={() => onToggleStatus(user.id)}
+                              disabled={!canManage}
+                              style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+                              onClick={() => canManage && onToggleStatus(user.id)}
                             >
                               {user.status === "Active" ? "Suspend" : "Activate"}
                             </button>
                             <button
                               type="button"
                               className="btn-action-delete"
-                              onClick={() => onDeleteUser(user.id)}
-                              title="Delete user"
+                              disabled={!canManage}
+                              style={{ opacity: canManage ? 1 : 0.5, cursor: canManage ? "pointer" : "not-allowed" }}
+                              onClick={() => canManage && onDeleteUser(user.id)}
+                              title={canManage ? "Delete user" : "Admin clearance required"}
                             >
                               &times;
                             </button>
@@ -4456,11 +4922,13 @@ function UserManagementPanel({
 
 function UserTopbarProfile({
   currentUser,
+  users = [],
   onOpenLogin,
   onSwitchUser,
   onLogout
 }: {
   currentUser: AppUser | null;
+  users?: AppUser[];
   onOpenLogin: () => void;
   onSwitchUser: (email: string) => void;
   onLogout: () => void;
@@ -4489,11 +4957,12 @@ function UserTopbarProfile({
 
   const isAdmin = Boolean(
     currentUser &&
+    currentUser.status !== "Suspended" &&
     (currentUser.email.toLowerCase() === "indurotech.jp@gmail.com" ||
+     currentUser.email.toLowerCase() === "tejas.p.singh@gmail.com" ||
      currentUser.role === "Super Admin" ||
      currentUser.role === "Admin")
   );
-  const isSuperAdmin = currentUser.role === "Super Admin" || currentUser.email.toLowerCase() === "indurotech.jp@gmail.com";
 
   return (
     <div className="topbar-user-menu-wrap" ref={ref}>
@@ -4522,7 +4991,7 @@ function UserTopbarProfile({
 
           <div className="dropdown-section">
             <span className="dropdown-section-title">Quick RBAC Testing:</span>
-            {!isSuperAdmin ? (
+            {!isAdmin ? (
               <button
                 type="button"
                 className="dropdown-item highlight"
@@ -4532,20 +5001,56 @@ function UserTopbarProfile({
                 }}
               >
                 <ShieldCheck style={{ width: 14, height: 14, color: "#10b981" }} />
-                <span>Switch to <strong>indurotech.jp@gmail.com</strong> (Admin)</span>
+                <span>Switch to <strong>InduroTech Admin</strong> (Super Admin)</span>
               </button>
             ) : (
               <button
                 type="button"
                 className="dropdown-item"
                 onClick={() => {
-                  onSwitchUser("tejas.p.singh@gmail.com");
+                  onSwitchUser("alex.vance@microsoft.corp");
                   setIsOpen(false);
                 }}
               >
                 <Users style={{ width: 14, height: 14, color: "#3b82f6" }} />
-                <span>Switch to <strong>tejas.p.singh@gmail.com</strong> (Trader)</span>
+                <span>Switch to <strong>Alex Vance</strong> (Trader - Read Only)</span>
               </button>
+            )}
+
+            {users.length > 0 && (
+              <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed #e2e8f0" }}>
+                <span style={{ fontSize: 10, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700, display: "block", marginBottom: 6 }}>
+                  Switch Active Persona:
+                </span>
+                <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 130, overflowY: "auto" }}>
+                  {users.map((u) => {
+                    const isSelected = currentUser.email.toLowerCase() === u.email.toLowerCase();
+                    const isUserAdmin = u.role === "Super Admin" || u.role === "Admin" || u.email.toLowerCase() === "indurotech.jp@gmail.com";
+                    return (
+                      <button
+                        key={u.id}
+                        type="button"
+                        className={`dropdown-item ${isSelected ? "selected" : ""}`}
+                        style={{ padding: "5px 8px", fontSize: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                        onClick={() => {
+                          onSwitchUser(u.email);
+                          setIsOpen(false);
+                        }}
+                      >
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: isSelected ? 700 : 500 }}>
+                          {u.name}
+                        </span>
+                        <span
+                          className={`topbar-role-pill ${isUserAdmin ? "role-admin" : "role-trader"}`}
+                          style={{ fontSize: 10, padding: "1px 6px" }}
+                        >
+                          {u.role}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             )}
           </div>
 
@@ -5305,11 +5810,11 @@ function SettingsEditor({
   );
 }
 
-function NumberField({ label, value, step = 1, onChange }: { label: string; value: number; step?: number; onChange: (value: number) => void }) {
+function NumberField({ label, value, step = 1, disabled, onChange }: { label: string; value: number; step?: number; disabled?: boolean; onChange: (value: number) => void }) {
   return (
     <label>
       {label}
-      <input type="number" step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+      <input type="number" step={step} value={value} disabled={disabled} onChange={(event) => onChange(Number(event.target.value))} />
     </label>
   );
 }
@@ -5443,10 +5948,18 @@ function topCounts(counts: Map<string, number>, limit: number) {
     .slice(0, limit);
 }
 
-let activeUserEmailHeader = "indurotech.jp@gmail.com";
+const ACTIVE_USER_STORAGE_KEY = "induro_active_user_email";
+let activeUserEmailHeader = typeof window !== "undefined"
+  ? (window.localStorage.getItem(ACTIVE_USER_STORAGE_KEY) || "indurotech.jp@gmail.com")
+  : "indurotech.jp@gmail.com";
 
 export function setActiveUserEmailHeader(email: string) {
   activeUserEmailHeader = email;
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(ACTIVE_USER_STORAGE_KEY, email);
+    } catch {}
+  }
 }
 
 async function getJson<T>(path: string): Promise<T> {
