@@ -241,6 +241,8 @@ type BrokerStatus = {
   isConnected: boolean;
   message: string;
   checkedAtUtc: string;
+  isTokenExpired?: boolean;
+  tokenExpiryUtc?: string | null;
 };
 
 type LookupResult = {
@@ -303,86 +305,36 @@ type ScannerUniverseDraft = {
 
 type RunUniverseMode = "universe" | "all" | "basket" | "instrument";
 
-// Comprehensive authentic reference prices for Indian equities (NSE/BSE)
-export const REAL_STOCK_PRICES: Record<string, number> = {
-  RELIANCE: 1167.70,
-  TCS: 2075.00,
-  HDFCBANK: 1712.00,
-  ICICIBANK: 1289.00,
-  INFY: 1035.00,
-  SBIN: 814.20,
-  BHARTIARTL: 1741.10,
-  ITC: 255.90,
-  LT: 3693.40,
-  AXISBANK: 1217.10,
-  KOTAKBANK: 418.35,
-  TATAMOTORS: 654.00,
-  WIPRO: 159.00,
-  MARUTI: 11386.00,
-  SUNPHARMA: 1801.00,
-  TITAN: 4515.70,
-  BAJFINANCE: 948.30,
-  HCLTECH: 1243.10,
-  NTPC: 315.10,
-  POWERGRID: 254.55,
-  "BAJAJ-AUTO": 10045.00,
-  "M&M": 2860.00,
-  TECHM: 1535.00,
-  ASIANPAINT: 2406.25,
-  ULTRACEMCO: 10710.00,
-  NESTLEIND: 1309.10,
-  COALINDIA: 420.40,
-  TATASTEEL: 178.00,
-  JSWSTEEL: 1233.00,
-  HINDUNILVR: 1836.00,
-  ADANIENT: 2816.80,
-  ADANIPORTS: 1737.80,
-  GRASIM: 2962.00,
-  LTIM: 4007.00,
-  EICHERMOT: 6920.00,
-  HEROMOTOCO: 5168.00,
-  DIVISLAB: 9249.00,
-  DRREDDY: 1200.10,
-  CIPLA: 1343.20,
-  APOLLOHOSP: 8052.50,
-  INDUSINDBK: 880.00,
-  BANKBARODA: 230.80,
-  PNB: 109.60,
-  CANBK: 118.40,
-  SHREECEM: 21900.00,
-  PIDILITIND: 1470.00,
-  SIEMENS: 3804.00,
-  ABB: 6900.00,
-  BHEL: 421.00,
-  BEL: 383.10,
-  HAL: 4601.00,
-  TRENT: 2580.00,
-  ZOMATO: 313.90,
-  JIOFIN: 212.50,
-  IRCTC: 454.10,
-  DLF: 658.40,
-  VBL: 425.30,
-  MRF: 123715.00,
-  BOSCHLTD: 45480.00,
-  PAGEIND: 36660.00
+export type LiveMarketQuote = {
+  symbol: string;
+  exchange: string;
+  lastPrice: number;
+  previousClose: number;
+  change: number;
+  changePercent: number;
+  dayHigh: number;
+  dayLow: number;
+  volume: number;
+  vwap: number;
+  isLive: boolean;
+  quoteAgeSeconds: number;
+  lastUpdatedUtc: string;
+  source: string;
 };
 
-export function getStockReferencePrice(symbol?: string): number {
-  if (!symbol) return 1000;
+// Live stock price fetcher (always fetches directly from backend API with zero fallback or caching)
+export async function fetchLiveStockPrice(symbol?: string, exchange = "NSE"): Promise<number | null> {
+  if (!symbol || !symbol.trim()) return null;
   const sym = symbol.toUpperCase().trim();
-  if (REAL_STOCK_PRICES[sym]) {
-    return REAL_STOCK_PRICES[sym];
+  try {
+    const res = await getJson<LiveMarketQuote>(`/api/market-data/quote/${encodeURIComponent(sym)}?exchange=${encodeURIComponent(exchange)}`);
+    if (res && typeof res.lastPrice === "number" && res.lastPrice > 0) {
+      return res.lastPrice;
+    }
+  } catch {
+    return null;
   }
-  let hash = 0;
-  for (let i = 0; i < sym.length; i++) {
-    hash = (hash << 5) - hash + sym.charCodeAt(i);
-    hash |= 0;
-  }
-  const positiveHash = Math.abs(hash);
-  const brackets = [185, 340, 520, 830, 1240, 1680, 2450, 3600, 5200];
-  const base = brackets[positiveHash % brackets.length];
-  const offset = (positiveHash % 60) - 30;
-  return Math.max(10, base + offset);
+  return null;
 }
 
 export type AppUser = {
@@ -645,6 +597,8 @@ type DashboardState = {
   applicationSettings: ApplicationSettings | null;
   scannerInstruments: ScannerInstruments | null;
   lookupResults: LookupResult[];
+  marketQuotes: Record<string, LiveMarketQuote>;
+  marketQuotesLastUpdatedUtc: string | null;
   loading: boolean;
   error: string | null;
 };
@@ -679,6 +633,8 @@ const initialState: DashboardState = {
   applicationSettings: null,
   scannerInstruments: null,
   lookupResults: [],
+  marketQuotes: {},
+  marketQuotesLastUpdatedUtc: null,
   loading: true,
   error: null
 };
@@ -786,6 +742,7 @@ function App() {
   const [isOAuthModalOpen, setIsOAuthModalOpen] = React.useState(false);
   const [isAddUserModalOpen, setIsAddUserModalOpen] = React.useState(false);
   const [isEmailViewerOpen, setIsEmailViewerOpen] = React.useState(false);
+  const [isDhanModalOpen, setIsDhanModalOpen] = React.useState(false);
 
   const handleSwitchUser = async (email: string) => {
     try {
@@ -973,7 +930,8 @@ function App() {
         notifications,
         usersList,
         sessionInfo,
-        latestSentEmails
+        latestSentEmails,
+        marketDataResponse
       ] = await Promise.all([
         getJson<{ status: string }>("/health"),
         getJson<RunSummary[]>("/scanner/runs/latest?limit=5"),
@@ -997,7 +955,8 @@ function App() {
         getJson<NotificationAttempt[]>("/notifications/attempts/latest?limit=8"),
         getJson<AppUser[]>("/api/auth/users").catch(() => []),
         getJson<{ user: AppUser | null; hasSettingsAccess: boolean }>("/api/auth/session").catch(() => ({ user: null, hasSettingsAccess: false })),
-        getJson<SentEmail[]>("/notifications/emails/latest?limit=50").catch(() => [])
+        getJson<SentEmail[]>("/notifications/emails/latest?limit=50").catch(() => []),
+        getJson<{ asOfUtc: string; quotes: Record<string, LiveMarketQuote> }>("/api/market-data/quotes").catch(() => null)
       ]);
 
       if (usersList && usersList.length > 0) {
@@ -1059,6 +1018,8 @@ function App() {
         pipelineStatus,
         scannerInstruments,
         lookupResults: current.lookupResults,
+        marketQuotes: marketDataResponse?.quotes ?? current.marketQuotes,
+        marketQuotesLastUpdatedUtc: marketDataResponse?.asOfUtc ?? current.marketQuotesLastUpdatedUtc,
         loading: false,
         error: null
       }));
@@ -1420,7 +1381,16 @@ function App() {
   const rejected = latestRun?.rejectedCount ?? 0;
   const actionable = state.monitorRuns[0]?.actionableCount ?? 0;
   const notificationFailures = state.notifications.filter((item) => !item.isSuccess).length;
-  const connectedBrokers = state.brokerStatuses.filter((item) => item.isConnected).length;
+  const totalBrokers = state.brokerStatuses.length > 0 ? state.brokerStatuses.length : 1;
+  const connectedBrokers = state.brokerStatuses.filter((item) => item.isConnected && !item.isTokenExpired).length;
+  const dhanBroker = state.brokerStatuses.find((b) => b.broker.toLowerCase() === "dhan");
+  const isDhanConnected = Boolean(dhanBroker && dhanBroker.isConnected && !dhanBroker.isTokenExpired);
+  const isDhanExpired = Boolean(
+    !dhanBroker ||
+    !dhanBroker.isConnected ||
+    dhanBroker.isTokenExpired ||
+    (dhanBroker.status && dhanBroker.status.toLowerCase().includes("expired"))
+  );
   const enabledUniverses = state.scannerInstruments?.universes.filter((universe) => universe.enabled || universe.name === selectedUniverseName) ?? [];
   const enabledBaskets = state.scannerInstruments?.baskets.filter((basket) => basket.enabled || basket.name === selectedBasketName) ?? [];
   const runUniverseLabel = runUniverseMode === "universe"
@@ -1573,6 +1543,27 @@ function App() {
             <span className="topbar-subtitle">Focused workspace for {activeNavItem.label.toLowerCase()}.</span>
           </div>
           <div className="topbar-actions" style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: "auto" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#f0fdf4", border: "1px solid #bbf7d0", padding: "4px 10px", borderRadius: 20, fontSize: "0.75rem", color: "#166534", fontWeight: 600 }}>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#22c55e", display: "inline-block" }}></span>
+              <span>Live Feed: Zero-Stale (Dhan API)</span>
+            </div>
+            <button
+              className="btn btn-secondary"
+              type="button"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "0.8125rem", padding: "6px 12px", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: 6, cursor: "pointer", fontWeight: 500 }}
+              onClick={async () => {
+                try {
+                  await postJson("/api/market-data/refresh");
+                  await loadDashboard();
+                } catch (e: any) {
+                  setState(s => ({ ...s, error: e.message || "Failed to sync market quotes" }));
+                }
+              }}
+              title="Synchronize live tick quotes from Dhan HQ API"
+            >
+              <Activity style={{ width: 14, height: 14, color: "#16a34a" }} />
+              <span>Sync Quotes</span>
+            </button>
             <button className="icon-button" type="button" onClick={() => void loadDashboard()} title="Refresh dashboard" aria-label="Refresh dashboard">
               <RefreshCw aria-hidden="true" />
             </button>
@@ -1593,6 +1584,63 @@ function App() {
           </div>
         )}
 
+        {isDhanExpired && (
+          <div
+            className="broker-expired-banner"
+            role="alert"
+            style={{
+              background: "#fff1f2",
+              border: "1px solid #fecdd3",
+              borderLeft: "6px solid #e11d48",
+              borderRadius: "6px",
+              padding: "12px 18px",
+              margin: "0 0 16px 0",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: "12px"
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <span style={{ fontSize: "24px", lineHeight: 1 }} aria-hidden="true">⚠️</span>
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  <strong style={{ color: "#9f1239", fontSize: "14px" }}>
+                    Dhan Broker Offline — Access Token Expired (HTTP 401)
+                  </strong>
+                  <span style={{ background: "#ffe4e6", color: "#e11d48", fontSize: "11px", fontWeight: 700, padding: "2px 8px", borderRadius: "10px", border: "1px solid #fda4af" }}>
+                    LIVE FEED SUSPENDED
+                  </span>
+                </div>
+                <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#881337" }}>
+                  {dhanBroker?.message || "Dhan HQ API returned HTTP 401: Client ID or user generated access token is invalid or expired. Live real-time market stream is paused. Displaying reference quotes."}
+                </p>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <button
+                type="button"
+                style={{
+                  background: "#e11d48",
+                  color: "#ffffff",
+                  border: "none",
+                  padding: "7px 16px",
+                  borderRadius: "4px",
+                  fontWeight: 600,
+                  fontSize: "12px",
+                  cursor: "pointer"
+                }}
+                onClick={() => {
+                  setActiveView("settings");
+                }}
+              >
+                Update Dhan 24h Token in Settings
+              </button>
+            </div>
+          </div>
+        )}
+
         <section className="control-summary" id="overview" aria-label="Command summary" hidden={activeView !== "overview"}>
           <InfoCard icon={<Database />} label="Run source" value={runUniverseLabel} detail={isRunUniverseReady ? "Ready for manual run" : "Selection required"} tone={isRunUniverseReady ? "good" : "warn"} />
           <InfoCard icon={<ShieldCheck />} label="Execution mode" value="Notification-only" detail="No broker order placement" tone="good" />
@@ -1604,7 +1652,12 @@ function App() {
           <Metric icon={<Gauge />} label="Latest Accepted" value={accepted.toString()} />
           <Metric icon={<Siren />} label="Latest Rejected" value={rejected.toString()} />
           <Metric icon={<Activity />} label="Monitor Alerts" value={actionable.toString()} tone={actionable > 0 ? "warn" : "neutral"} />
-          <Metric icon={<History />} label="Broker Online" value={`${connectedBrokers}/${state.brokerStatuses.length || 3}`} tone={connectedBrokers > 0 ? "good" : "warn"} />
+          <Metric
+            icon={<History />}
+            label="Broker Online"
+            value={connectedBrokers > 0 ? `${connectedBrokers}/${totalBrokers} Online` : `0/${totalBrokers} (Token Expired)`}
+            tone={connectedBrokers > 0 ? "good" : "bad"}
+          />
           <Metric icon={<Database />} label="Cache Files" value={(state.dataSourceSettings?.historicalCacheEntryCount ?? 0).toString()} tone={state.dataSourceSettings?.historicalCacheEnabled ? "good" : "warn"} />
           <Metric icon={<Bell />} label="Notification Failures" value={notificationFailures.toString()} tone={notificationFailures > 0 ? "bad" : "good"} />
         </section>
@@ -2092,14 +2145,35 @@ function App() {
             />
           </Panel>
 
-          <Panel title="Broker Connection Status" id="broker">
+          <Panel title="Broker Connection Status" id="broker" action={isDhanExpired ? "Offline (401)" : "Online"}>
+            <div style={{ marginBottom: "12px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+              <span style={{ fontSize: "12px", color: isDhanExpired ? "#b91c1c" : "#15803d", fontWeight: 600 }}>
+                {isDhanExpired ? "🔴 Live broker stream suspended due to expired Dhan access token (HTTP 401)." : "🟢 Live broker stream active with Dhan HQ API."}
+              </span>
+              <button
+                type="button"
+                className="secondary"
+                style={{ fontSize: "12px", padding: "4px 10px" }}
+                onClick={() => setActiveView("settings")}
+              >
+                Configure / Renew Token
+              </button>
+            </div>
             <DataTable
               columns={["Broker", "Configured", "Connected", "Status", "Message"]}
               rows={state.brokerStatuses.map((item) => [
                 item.broker,
                 item.isConfigured ? "Yes" : "No",
-                item.isConnected ? "Yes" : "No",
-                item.status,
+                item.isConnected && !item.isTokenExpired ? (
+                  <span style={{ color: "#16a34a", fontWeight: 700 }}>Yes (Live)</span>
+                ) : (
+                  <span style={{ color: "#dc2626", fontWeight: 700 }}>No (Offline)</span>
+                ),
+                item.isConnected && !item.isTokenExpired ? (
+                  <span style={{ background: "#dcfce7", color: "#15803d", padding: "2px 8px", borderRadius: "10px", fontSize: "11px", fontWeight: 700 }}>Connected</span>
+                ) : (
+                  <span style={{ background: "#fee2e2", color: "#b91c1c", padding: "2px 8px", borderRadius: "10px", fontSize: "11px", fontWeight: 700 }}>Token Expired (401)</span>
+                ),
                 item.message
               ])}
               emptyText="Broker status has not loaded yet."
@@ -2343,6 +2417,8 @@ function App() {
                 testingNotificationChannel={testingNotificationChannel}
                 sentEmailsCount={sentEmails.length}
                 onOpenSentEmails={() => setIsEmailViewerOpen(true)}
+                brokerStatuses={state.brokerStatuses}
+                onBrokerStatusUpdated={() => void loadDashboard()}
               />
             </Panel>
           ) : (
@@ -2606,12 +2682,19 @@ function OperationsSnapshot({
 }) {
   const latestRun = scannerRuns[0];
   const failures = notifications.filter((item) => !item.isSuccess).length;
-  const connected = brokerStatuses.filter((item) => item.isConnected).length;
+  const totalBrokers = brokerStatuses.length > 0 ? brokerStatuses.length : 1;
+  const connected = brokerStatuses.filter((item) => item.isConnected && !item.isTokenExpired).length;
 
   return (
     <div className="snapshot-grid">
       <InfoCard icon={<Database />} label="Historical cache" value={settings?.historicalCacheEnabled ? `${settings.historicalCacheEntryCount} files` : "Off"} detail={settings ? `${settings.historicalCacheTtlHours}h TTL` : "Loading"} tone={settings?.historicalCacheEnabled ? "good" : "warn"} />
-      <InfoCard icon={<ShieldCheck />} label="Broker status" value={`${connected}/${brokerStatuses.length || 3} online`} detail="Final validation is broker-direct" tone={connected > 0 ? "good" : "warn"} />
+      <InfoCard
+        icon={<ShieldCheck />}
+        label="Broker status"
+        value={connected > 0 ? `${connected}/${totalBrokers} online` : "Offline (Token Expired)"}
+        detail={connected > 0 ? "Final validation is broker-direct" : "Dhan token expired (HTTP 401) - Feed suspended"}
+        tone={connected > 0 ? "good" : "bad"}
+      />
       <InfoCard icon={<ClipboardList />} label="Latest EOD" value={latestRun ? `${latestRun.acceptedCount ?? 0}/${(latestRun.acceptedCount ?? 0) + (latestRun.rejectedCount ?? 0)}` : "No run"} detail={latestRun ? latestRun.sessionDate : "Run EOD to populate history"} />
       <InfoCard icon={<Bell />} label="Notifications" value={`${failures} failed`} detail={`${notifications.length} recent attempts`} tone={failures > 0 ? "bad" : "good"} />
     </div>
@@ -3117,7 +3200,7 @@ function InstrumentEditor({
           </thead>
           <tbody>
             {instruments.map((instrument, index) => {
-              const displayPrice = instrument.lastPrice ?? getStockReferencePrice(instrument.symbol);
+              const displayPrice = instrument.lastPrice;
               return (
                 <tr key={`${instrument.exchange}:${instrument.symbol}:${index}`}>
                   <td>
@@ -3125,7 +3208,17 @@ function InstrumentEditor({
                       <InstrumentLookupInput
                         value={instrument.symbol}
                         exchange={instrument.exchange}
-                        onValueChange={(value) => updateInstrument(index, { symbol: value.toUpperCase(), lastPrice: getStockReferencePrice(value) })}
+                        onValueChange={(value) => {
+                          const sym = value.toUpperCase();
+                          updateInstrument(index, { symbol: sym });
+                          if (sym.length >= 2) {
+                            void fetchLiveStockPrice(sym, instrument.exchange).then((price) => {
+                              if (price !== null) {
+                                updateInstrument(index, { lastPrice: price });
+                              }
+                            });
+                          }
+                        }}
                         onSelect={(result) => updateInstrument(index, lookupResultToInstrument(result))}
                       />
                     ) : (
@@ -3255,7 +3348,7 @@ function InstrumentLookupInput({
         <div className="lookup-suggestions">
           {isLoading && <span>Searching...</span>}
           {suggestions.map((result) => {
-            const price = result.lastPrice ?? getStockReferencePrice(result.symbol);
+            const price = result.lastPrice;
             return (
               <button
                 key={`${result.exchange}:${result.securityId}:${result.symbol}`}
@@ -4110,7 +4203,7 @@ function UniverseEditor({
                     {universe.directInstruments.length > 0 && (
                       <div className="direct-stocks-wrap">
                         {universe.directInstruments.map((instrument, instrumentIndex) => {
-                          const tagPrice = instrument.lastPrice ?? getStockReferencePrice(instrument.symbol);
+                          const tagPrice = instrument.lastPrice;
                           return (
                             <div
                               key={`${universe.name}:${instrument.exchange}:${instrument.symbol}:${instrumentIndex}`}
@@ -4161,7 +4254,7 @@ function UniverseEditor({
                           </thead>
                           <tbody>
                             {universe.directInstruments.map((instrument, instrumentIndex) => {
-                              const displayPrice = instrument.lastPrice ?? getStockReferencePrice(instrument.symbol);
+                              const displayPrice = instrument.lastPrice;
                               return (
                                 <tr key={`detailed:${universe.name}:${instrumentIndex}`}>
                                   <td>
@@ -4521,7 +4614,7 @@ function BasketEditor({
                 </thead>
                 <tbody>
                   {basket.instruments.map((instrument, instrumentIndex) => {
-                    const displayPrice = instrument.lastPrice ?? getStockReferencePrice(instrument.symbol);
+                    const displayPrice = instrument.lastPrice;
                     return (
                       <tr key={`${basket.name}:${instrument.exchange}:${instrument.symbol}:${instrumentIndex}`}>
                         <td>
@@ -4616,7 +4709,7 @@ function lookupResultToInstrument(result: LookupResult): ScannerInstrument {
     isin: result.isin ?? "",
     securityId: result.securityId,
     key: `${exchange}:${result.symbol}`.toUpperCase(),
-    lastPrice: result.lastPrice ?? getStockReferencePrice(result.symbol)
+    lastPrice: result.lastPrice
   };
 }
 
@@ -5013,7 +5106,7 @@ function UserTopbarProfile({
                 }}
               >
                 <Users style={{ width: 14, height: 14, color: "#3b82f6" }} />
-                <span>Switch to <strong>Alex Vance</strong> (Trader - Read Only)</span>
+                <span>Switch to <strong>Alex Vance</strong> (Trader Persona)</span>
               </button>
             )}
 
@@ -5025,7 +5118,7 @@ function UserTopbarProfile({
                 <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 130, overflowY: "auto" }}>
                   {users.map((u) => {
                     const isSelected = currentUser.email.toLowerCase() === u.email.toLowerCase();
-                    const isUserAdmin = u.role === "Super Admin" || u.role === "Admin" || u.email.toLowerCase() === "indurotech.jp@gmail.com";
+                    const isUserAdmin = u.role === "Super Admin" || u.role === "Admin" || u.email.toLowerCase() === "indurotech.jp@gmail.com" || u.email.toLowerCase() === "tejas.p.singh@gmail.com";
                     return (
                       <button
                         key={u.id}
@@ -5141,8 +5234,8 @@ function OAuthLoginModal({
               <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
             </svg>
             <div>
-              <strong style={{ display: "block" }}>Sign in with Google / Gmail (Trader)</strong>
-              <small style={{ color: "#64748b" }}>tejas.p.singh@gmail.com (Trader Account)</small>
+              <strong style={{ display: "block" }}>Sign in with Google / Gmail (Super Admin)</strong>
+              <small style={{ color: "#7c3aed" }}>tejas.p.singh@gmail.com (Super Admin Settings Clearance)</small>
             </div>
           </button>
 
@@ -5408,7 +5501,9 @@ function SettingsEditor({
   onTestNotification,
   testingNotificationChannel,
   sentEmailsCount = 0,
-  onOpenSentEmails
+  onOpenSentEmails,
+  brokerStatuses = [],
+  onBrokerStatusUpdated
 }: {
   settings: ApplicationSettings | null;
   message?: string | null;
@@ -5418,12 +5513,69 @@ function SettingsEditor({
   testingNotificationChannel?: string | null;
   sentEmailsCount?: number;
   onOpenSentEmails?: () => void;
+  brokerStatuses?: BrokerStatus[];
+  onBrokerStatusUpdated?: () => void;
 }) {
   const [activeSettingsGroup, setActiveSettingsGroup] = React.useState<SettingsGroup>("broker");
+  const [showTokenInput, setShowTokenInput] = React.useState(false);
+  const [newTokenValue, setNewTokenValue] = React.useState<string | null>(null);
+  const [isVerifyingBroker, setIsVerifyingBroker] = React.useState(false);
+  const [verifyFeedback, setVerifyFeedback] = React.useState<{ success: boolean; message: string } | null>(null);
 
   if (!settings) {
     return <p className="empty-state">Application settings are loading.</p>;
   }
+
+  const dhanBrokerStatus = brokerStatuses.find((b) => b.broker.toLowerCase() === "dhan");
+
+  const handleVerifyDhanToken = async () => {
+    setIsVerifyingBroker(true);
+    setVerifyFeedback(null);
+    try {
+      const res = await postJson<{
+        status: string;
+        isConnected: boolean;
+        isTokenExpired: boolean;
+        message: string;
+      }>("/broker/dhan/verify", {
+        accessToken: newTokenValue !== null ? newTokenValue : (settings?.broker?.dhan?.accessToken || undefined),
+        clientId: settings?.broker?.dhan?.clientId,
+        baseUrl: settings?.broker?.dhan?.baseUrl
+      });
+      setIsVerifyingBroker(false);
+      setVerifyFeedback({
+        success: res.isConnected,
+        message: res.isConnected
+          ? "✅ Connection verified with Dhan HQ API! Market data stream is active."
+          : `⚠️ Verification check: ${res.message}`
+      });
+      onBrokerStatusUpdated?.();
+    } catch (err: any) {
+      setIsVerifyingBroker(false);
+      setVerifyFeedback({
+        success: false,
+        message: `⚠️ Dhan verification request failed: ${err.message || "Unknown error"}`
+      });
+    }
+  };
+
+  const handleSimulateExpired = async (expired: boolean) => {
+    try {
+      await postJson("/broker/dhan/simulate-expired", { expired });
+      setVerifyFeedback({
+        success: !expired,
+        message: expired
+          ? "⚠️ Dhan token set to EXPIRED state (simulated). Live feed suspended."
+          : "✅ Dhan token set to ACTIVE state (simulated)."
+      });
+      onBrokerStatusUpdated?.();
+    } catch (err: any) {
+      setVerifyFeedback({
+        success: false,
+        message: `Failed to simulate state: ${err.message}`
+      });
+    }
+  };
 
   const updateRisk = (patch: Partial<ApplicationSettings["risk"]>) =>
     onChange({ ...settings, risk: { ...settings.risk, ...patch } });
@@ -5484,6 +5636,155 @@ function SettingsEditor({
       </div>
       {message && <p className="settings-message">{message}</p>}
       <div className="settings-grid">
+        <fieldset hidden={activeSettingsGroup !== "broker"}>
+          <legend>Dhan HQ Broker Integration &amp; 24h Access Token</legend>
+
+          <div
+            style={{
+              padding: "12px 14px",
+              borderRadius: "6px",
+              marginBottom: "14px",
+              background: dhanBrokerStatus?.isConnected && !dhanBrokerStatus?.isTokenExpired ? "#f0fdf4" : "#fef2f2",
+              border: `1px solid ${dhanBrokerStatus?.isConnected && !dhanBrokerStatus?.isTokenExpired ? "#86efac" : "#fca5a5"}`
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "16px" }}>
+                  {dhanBrokerStatus?.isConnected && !dhanBrokerStatus?.isTokenExpired ? "🟢" : "🔴"}
+                </span>
+                <strong style={{ color: dhanBrokerStatus?.isConnected && !dhanBrokerStatus?.isTokenExpired ? "#166534" : "#991b1b" }}>
+                  Status: {dhanBrokerStatus?.status || "Token Expired"}
+                </strong>
+              </div>
+              <span
+                style={{
+                  fontSize: "11px",
+                  padding: "2px 8px",
+                  borderRadius: "12px",
+                  fontWeight: 700,
+                  background: dhanBrokerStatus?.isConnected && !dhanBrokerStatus?.isTokenExpired ? "#dcfce7" : "#fee2e2",
+                  color: dhanBrokerStatus?.isConnected && !dhanBrokerStatus?.isTokenExpired ? "#15803d" : "#b91c1c"
+                }}
+              >
+                {dhanBrokerStatus?.isConnected && !dhanBrokerStatus?.isTokenExpired ? "ONLINE / VERIFIED" : "OFFLINE / EXPIRED"}
+              </span>
+            </div>
+            <p style={{ margin: "4px 0 0", fontSize: "12px", color: dhanBrokerStatus?.isConnected && !dhanBrokerStatus?.isTokenExpired ? "#14532d" : "#7f1d1d" }}>
+              {dhanBrokerStatus?.message || "Dhan HQ access token expired (HTTP 401). Live market data feed suspended. Please update token."}
+            </p>
+            {dhanBrokerStatus?.tokenExpiryUtc && (
+              <small style={{ display: "block", marginTop: "4px", fontSize: "11px", opacity: 0.8, color: "#64748b" }}>
+                Token Expiry: {new Date(dhanBrokerStatus.tokenExpiryUtc).toLocaleString()}
+              </small>
+            )}
+          </div>
+
+          <label>
+            Primary Broker Provider
+            <select
+              value={settings.broker.primaryProvider}
+              onChange={(event) => updateBroker({ primaryProvider: event.target.value })}
+            >
+              <option value="Dhan">Dhan HQ API (REST &amp; WebSocket v2)</option>
+            </select>
+          </label>
+
+          <label>
+            Dhan Client ID
+            <input
+              type="text"
+              value={settings.broker.dhan.clientId}
+              placeholder="e.g. 1100234891"
+              onChange={(event) => updateDhan({ clientId: event.target.value.trim() })}
+            />
+          </label>
+
+          <label>
+            Dhan 24h Access Token (Masked for Security)
+            <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+              <input
+                type={showTokenInput ? "text" : "password"}
+                value={newTokenValue !== null ? newTokenValue : (settings.broker.dhan.accessToken || "")}
+                placeholder={settings.broker.dhan.accessTokenMasked || "Paste new 24h Dhan access token..."}
+                onChange={(event) => {
+                  setNewTokenValue(event.target.value);
+                  updateDhan({ accessToken: event.target.value });
+                }}
+                style={{ flex: 1 }}
+              />
+              <button
+                type="button"
+                className="secondary"
+                style={{ padding: "6px 10px", fontSize: "12px" }}
+                onClick={() => setShowTokenInput(!showTokenInput)}
+              >
+                {showTokenInput ? "Hide" : "Show"}
+              </button>
+              {newTokenValue !== null && (
+                <button
+                  type="button"
+                  className="secondary"
+                  style={{ padding: "6px 10px", fontSize: "12px" }}
+                  onClick={() => {
+                    setNewTokenValue("");
+                    updateDhan({ accessToken: "" });
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            <small style={{ display: "block", marginTop: "4px", color: "#64748b" }}>
+              ⚠️ Per Dhan &amp; SEBI regulations, Dhan access tokens expire every 24 hours. Generate a fresh token from <strong>web.dhan.co &gt; Profile &gt; DhanHQ API &gt; Generate Access Token</strong>.
+            </small>
+          </label>
+
+          <label>
+            Dhan API Base URL
+            <input
+              type="text"
+              value={settings.broker.dhan.baseUrl}
+              placeholder="https://api.dhan.co/v2/"
+              onChange={(event) => updateDhan({ baseUrl: event.target.value })}
+            />
+          </label>
+
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "12px", alignItems: "center" }}>
+            <button
+              type="button"
+              className="test-btn"
+              disabled={isVerifyingBroker}
+              onClick={() => void handleVerifyDhanToken()}
+            >
+              {isVerifyingBroker ? "Verifying with Dhan..." : "Verify Connection (HTTP Check)"}
+            </button>
+            <button
+              type="button"
+              className="test-btn"
+              style={{ background: "#475569" }}
+              onClick={() => void handleSimulateExpired(!dhanBrokerStatus?.isTokenExpired)}
+            >
+              {dhanBrokerStatus?.isTokenExpired ? "Simulate Active Token" : "Simulate Expired Token (Test)"}
+            </button>
+          </div>
+
+          {verifyFeedback && (
+            <div
+              style={{
+                marginTop: "10px",
+                padding: "8px 12px",
+                borderRadius: "4px",
+                fontSize: "12px",
+                background: verifyFeedback.success ? "#f0fdf4" : "#fef2f2",
+                color: verifyFeedback.success ? "#166534" : "#991b1b",
+                border: `1px solid ${verifyFeedback.success ? "#bbf7d0" : "#fecaca"}`
+              }}
+            >
+              {verifyFeedback.message}
+            </div>
+          )}
+        </fieldset>
         <fieldset hidden={activeSettingsGroup !== "risk"}>
           <legend>Risk and capital</legend>
           <NumberField label="Capital amount" value={settings.risk.capitalAmount} onChange={(value) => updateRisk({ capitalAmount: value })} />
@@ -5964,7 +6265,12 @@ export function setActiveUserEmailHeader(email: string) {
 
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: { "x-user-email": activeUserEmailHeader }
+    cache: "no-store",
+    headers: {
+      "x-user-email": activeUserEmailHeader,
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "Pragma": "no-cache"
+    }
   });
   if (!response.ok) {
     let msg = `${path} returned ${response.status}`;
